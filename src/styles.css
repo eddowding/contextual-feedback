@@ -424,3 +424,284 @@
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
+
+/* =============================================================================
+   Feedback List (Admin)
+   ============================================================================= */
+
+.cf-list-container {
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+}
+
+.cf-list-loading,
+.cf-list-error,
+.cf-list-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 48px;
+  color: #6b7280;
+}
+
+.cf-list-error {
+  color: #dc2626;
+}
+
+.cf-list-spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid #e5e7eb;
+  border-top-color: #3b82f6;
+  border-radius: 50%;
+  animation: cf-spin 0.8s linear infinite;
+}
+
+.cf-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: #f9fafb;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.cf-list-count {
+  font-size: 14px;
+  color: #6b7280;
+}
+
+.cf-list-copy-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: white;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: inherit;
+  color: #374151;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.cf-list-copy-all:hover {
+  background: #f3f4f6;
+}
+
+.cf-list-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.cf-list-table thead {
+  background: #f9fafb;
+}
+
+.cf-list-table th {
+  padding: 10px 12px;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 500;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.cf-list-th-expand,
+.cf-list-th-copy {
+  width: 40px;
+}
+
+.cf-list-table tbody tr {
+  border-top: 1px solid #e5e7eb;
+}
+
+.cf-list-row {
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.cf-list-row:hover {
+  background: #f9fafb;
+}
+
+.cf-list-row-expanded {
+  background: #eff6ff;
+}
+
+.cf-list-table td {
+  padding: 12px;
+  font-size: 14px;
+  color: #111827;
+}
+
+.cf-list-td-expand {
+  padding-left: 16px;
+  padding-right: 4px;
+}
+
+.cf-list-chevron {
+  color: #9ca3af;
+  transition: transform 0.2s ease;
+}
+
+.cf-list-chevron-open {
+  transform: rotate(90deg);
+}
+
+.cf-list-td-user {
+  font-weight: 500;
+}
+
+.cf-list-td-page {
+  max-width: 200px;
+}
+
+.cf-list-page-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #3b82f6;
+  text-decoration: none;
+  font-size: 13px;
+}
+
+.cf-list-page-link:hover {
+  color: #1d4ed8;
+  text-decoration: underline;
+}
+
+.cf-list-td-context {
+  white-space: nowrap;
+}
+
+.cf-list-context-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  background: #dbeafe;
+  color: #1e40af;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.cf-list-context-general {
+  color: #9ca3af;
+  font-size: 12px;
+}
+
+.cf-list-td-date {
+  font-size: 12px;
+  color: #6b7280;
+  white-space: nowrap;
+}
+
+.cf-list-td-status {
+  white-space: nowrap;
+}
+
+.cf-list-status-select {
+  padding: 4px 24px 4px 10px;
+  border-radius: 9999px;
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid;
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+}
+
+.cf-status-pending {
+  background: #fef3c7;
+  color: #92400e;
+  border-color: #fcd34d;
+}
+
+.cf-status-review {
+  background: #dbeafe;
+  color: #1e40af;
+  border-color: #93c5fd;
+}
+
+.cf-status-done {
+  background: #dcfce7;
+  color: #166534;
+  border-color: #86efac;
+}
+
+.cf-status-rejected {
+  background: #f3f4f6;
+  color: #4b5563;
+  border-color: #d1d5db;
+}
+
+.cf-list-td-copy {
+  padding-right: 16px;
+}
+
+.cf-list-copy-btn {
+  padding: 4px;
+  background: none;
+  border: none;
+  color: #9ca3af;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: color 0.2s ease;
+}
+
+.cf-list-copy-btn:hover {
+  color: #4b5563;
+}
+
+.cf-list-details-row td {
+  padding: 0;
+  background: #f9fafb;
+}
+
+.cf-list-details {
+  padding: 16px 20px;
+}
+
+.cf-list-feedback-text {
+  background: white;
+  padding: 12px;
+  border-radius: 6px;
+  border: 1px solid #e5e7eb;
+  font-size: 14px;
+  white-space: pre-wrap;
+  color: #111827;
+}
+
+.cf-list-admin-notes {
+  margin-top: 12px;
+  font-size: 13px;
+}
+
+.cf-list-admin-notes strong {
+  color: #6b7280;
+  font-weight: 500;
+}
+
+.cf-list-admin-notes p {
+  margin: 4px 0 0 0;
+  background: white;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid #e5e7eb;
+  white-space: pre-wrap;
+}
+
+.cf-list-meta {
+  margin-top: 12px;
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: #9ca3af;
+}

@@ -103,6 +103,22 @@ CREATE INDEX idx_feedback_created_at ON feedback(created_at DESC);
 
 Done! Users can now click the feedback button, see highlighted sections, and submit targeted feedback.
 
+### 5. Add an admin page (optional)
+
+```tsx
+// app/admin/feedback/page.tsx
+import { FeedbackList } from 'contextual-feedback';
+
+export default async function AdminFeedbackPage() {
+  return (
+    <div className="p-6">
+      <h1 className="text-2xl font-bold mb-6">Feedback</h1>
+      <FeedbackList />
+    </div>
+  );
+}
+```
+
 ## Database Adapters
 
 ### PostgreSQL
@@ -152,6 +168,26 @@ interface FeedbackAdapter {
 ```
 
 ## Components
+
+### `<FeedbackList>`
+
+Admin component to view and manage feedback.
+
+```tsx
+<FeedbackList
+  apiEndpoint="/api/feedback"     // Default
+  statusFilter="Pending"          // Optional: filter by status
+  showCopyButtons={true}          // Show copy-to-clipboard buttons
+  dateLocale="en-US"              // Date formatting locale
+/>
+```
+
+**Features:**
+- Expandable rows showing full feedback text
+- Inline status dropdown (updates via API)
+- Copy feedback as JSON
+- Context shown as blue badge
+- Loading and error states
 
 ### `<FeedbackProvider>`
 

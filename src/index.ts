@@ -10,6 +10,9 @@ export { FeedbackHoverHandler } from './components/FeedbackHoverHandler';
 export { FeedbackButton } from './components/FeedbackButton';
 export type { FeedbackButtonProps } from './components/FeedbackButton';
 
+export { FeedbackList } from './components/FeedbackList';
+export type { FeedbackListProps } from './components/FeedbackList';
+
 // Types
 export type {
   Feedback,
