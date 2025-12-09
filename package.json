@@ -1,0 +1,80 @@
+{
+  "name": "contextual-feedback",
+  "version": "0.1.0",
+  "description": "Section-targeted feedback system for React applications. Let users click exactly what they're giving feedback about.",
+  "keywords": [
+    "feedback",
+    "react",
+    "nextjs",
+    "user-feedback",
+    "contextual",
+    "section-targeting",
+    "ux"
+  ],
+  "author": "Ed Dowding",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/eddowding/contextual-feedback.git"
+  },
+  "homepage": "https://github.com/eddowding/contextual-feedback#readme",
+  "bugs": {
+    "url": "https://github.com/eddowding/contextual-feedback/issues"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./styles.css": "./dist/styles.css",
+    "./adapters/postgres": {
+      "import": "./dist/lib/adapters/postgres.mjs",
+      "require": "./dist/lib/adapters/postgres.js",
+      "types": "./dist/lib/adapters/postgres.d.ts"
+    },
+    "./adapters/supabase": {
+      "import": "./dist/lib/adapters/supabase.mjs",
+      "require": "./dist/lib/adapters/supabase.js",
+      "types": "./dist/lib/adapters/supabase.d.ts"
+    },
+    "./adapters/memory": {
+      "import": "./dist/lib/adapters/memory.mjs",
+      "require": "./dist/lib/adapters/memory.js",
+      "types": "./dist/lib/adapters/memory.d.ts"
+    },
+    "./api": {
+      "import": "./dist/api/handlers.mjs",
+      "require": "./dist/api/handlers.js",
+      "types": "./dist/api/handlers.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "react": ">=18.0.0",
+    "react-dom": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.3.0"
+  }
+}
