@@ -26,30 +26,40 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
+      "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
-      "require": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "require": "./dist/index.js"
     },
     "./styles.css": "./dist/styles.css",
     "./adapters/postgres": {
+      "types": "./dist/lib/adapters/postgres.d.ts",
       "import": "./dist/lib/adapters/postgres.mjs",
-      "require": "./dist/lib/adapters/postgres.js",
-      "types": "./dist/lib/adapters/postgres.d.ts"
+      "require": "./dist/lib/adapters/postgres.js"
     },
     "./adapters/supabase": {
+      "types": "./dist/lib/adapters/supabase.d.ts",
       "import": "./dist/lib/adapters/supabase.mjs",
-      "require": "./dist/lib/adapters/supabase.js",
-      "types": "./dist/lib/adapters/supabase.d.ts"
+      "require": "./dist/lib/adapters/supabase.js"
     },
     "./adapters/memory": {
+      "types": "./dist/lib/adapters/memory.d.ts",
       "import": "./dist/lib/adapters/memory.mjs",
-      "require": "./dist/lib/adapters/memory.js",
-      "types": "./dist/lib/adapters/memory.d.ts"
+      "require": "./dist/lib/adapters/memory.js"
     },
     "./api": {
+      "types": "./dist/api/handlers.d.ts",
       "import": "./dist/api/handlers.mjs",
-      "require": "./dist/api/handlers.js",
-      "types": "./dist/api/handlers.d.ts"
+      "require": "./dist/api/handlers.js"
+    },
+    "./ai": {
+      "types": "./dist/lib/ai.d.ts",
+      "import": "./dist/lib/ai.mjs",
+      "require": "./dist/lib/ai.js"
+    },
+    "./setup": {
+      "types": "./dist/setup/supabase.d.ts",
+      "import": "./dist/setup/supabase.mjs",
+      "require": "./dist/setup/supabase.js"
     }
   },
   "files": [
@@ -62,6 +72,8 @@
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "prepublishOnly": "npm run build"
   },
   "peerDependencies": {
@@ -75,6 +87,7 @@
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "tsup": "^8.0.0",
-    "typescript": "^5.3.0"
+    "typescript": "^5.3.0",
+    "vitest": "^4.0.18"
   }
 }
