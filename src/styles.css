@@ -705,3 +705,56 @@
   font-size: 12px;
   color: #9ca3af;
 }
+
+/* =============================================================================
+   Feedback List Header Actions
+   ============================================================================= */
+
+.cf-list-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* =============================================================================
+   Pagination
+   ============================================================================= */
+
+.cf-list-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-top: 1px solid #e5e7eb;
+  background: #f9fafb;
+}
+
+.cf-list-page-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  background: white;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: inherit;
+  color: #374151;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.cf-list-page-btn:hover:not(:disabled) {
+  background: #f3f4f6;
+}
+
+.cf-list-page-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.cf-list-page-indicator {
+  font-size: 13px;
+  color: #6b7280;
+}
