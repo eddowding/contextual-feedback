@@ -1,5 +1,12 @@
 import { Feedback, FeedbackAdapter, FeedbackInput, FeedbackStatus, FeedbackUpdate } from '../types';
 
+/** Compute resolvedAt based on status transition */
+function computeResolvedAt(status: FeedbackStatus | undefined): string | null | undefined {
+  if (status === 'Done' || status === 'Rejected') return new Date().toISOString();
+  if (status === 'Pending' || status === 'In Review') return null;
+  return undefined; // no status change
+}
+
 /**
  * In-memory adapter for development and testing
  *
@@ -12,6 +19,18 @@ import { Feedback, FeedbackAdapter, FeedbackInput, FeedbackStatus, FeedbackUpdat
  */
 export function createMemoryAdapter(): FeedbackAdapter {
   const storage: Map<string, Feedback> = new Map();
+
+  function applyUpdate(existing: Feedback, updates: FeedbackUpdate): Feedback {
+    const resolvedAt = computeResolvedAt(updates.status);
+    return {
+      ...existing,
+      ...(updates.status !== undefined ? { status: updates.status } : {}),
+      ...(updates.adminNotes !== undefined ? { adminNotes: updates.adminNotes } : {}),
+      ...(updates.category !== undefined ? { category: updates.category } : {}),
+      ...(resolvedAt !== undefined ? { resolvedAt: resolvedAt ?? undefined } : {}),
+      updatedAt: new Date().toISOString(),
+    };
+  }
 
   return {
     async getAll(status?: FeedbackStatus): Promise<Feedback[]> {
@@ -38,6 +57,7 @@ export function createMemoryAdapter(): FeedbackAdapter {
         status: 'Pending',
         context: input.context,
         elementId: input.elementId,
+        category: input.category,
         createdAt: now,
         updatedAt: now,
       };
@@ -50,12 +70,7 @@ export function createMemoryAdapter(): FeedbackAdapter {
       const existing = storage.get(id);
       if (!existing) return null;
 
-      const updated: Feedback = {
-        ...existing,
-        ...updates,
-        updatedAt: new Date().toISOString(),
-      };
-
+      const updated = applyUpdate(existing, updates);
       storage.set(id, updated);
       return updated;
     },
@@ -67,6 +82,21 @@ export function createMemoryAdapter(): FeedbackAdapter {
     async getCount(status?: FeedbackStatus): Promise<number> {
       if (!status) return storage.size;
       return Array.from(storage.values()).filter(f => f.status === status).length;
+    },
+
+    async bulkUpdate(updates: Array<{ id: string } & FeedbackUpdate>): Promise<Feedback[]> {
+      const results: Feedback[] = [];
+
+      for (const { id, ...update } of updates) {
+        const existing = storage.get(id);
+        if (!existing) continue;
+
+        const updated = applyUpdate(existing, update);
+        storage.set(id, updated);
+        results.push(updated);
+      }
+
+      return results;
     }
   };
 }

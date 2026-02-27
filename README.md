@@ -1,37 +1,54 @@
 # contextual-feedback
 
-Section-targeted feedback system for React applications. Let users click exactly what they're giving feedback about.
+Section-targeted feedback with an AI resolution loop.
 
-![Demo](https://raw.githubusercontent.com/eddowding/contextual-feedback/main/demo.gif)
+Users click exactly what they're giving feedback about. An AI agent triages, fixes, and resolves — closing the loop automatically.
 
-## Why?
+## The AI Loop
 
-Most feedback tools are just a form. Users say "something's broken" and you have no idea what they're looking at.
+```
+User submits feedback → TRIAGE endpoint → AI agent reads →
+Agent fixes code/config → RESOLVE endpoint → Done
+```
 
-This library lets users:
-1. Enter **feedback mode** (click a button)
-2. See all feedbackable sections **highlighted with blue outlines**
-3. **Click the exact section** they want to give feedback about
-4. Submit feedback **with context automatically attached**
+1. **User clicks a section** and submits feedback with context attached
+2. **TRIAGE** returns pending items in an AI-optimized format
+3. **Your AI agent** reads the triage, takes action (deploys a fix, replies, etc.)
+4. **RESOLVE** bulk-updates items with status + notes
 
-Admins see feedback with the exact section name and page URL - no guessing.
+This turns feedback from a backlog into a self-healing system.
 
-## Installation
+## Section Targeting
+
+Add `data-feedback-context` to any element:
+
+```tsx
+<section data-feedback-context="Pricing Table" data-feedback-id="pricing">
+  {/* Users see this highlighted in feedback mode */}
+</section>
+```
+
+When users enter feedback mode, sections glow blue. Click one, and the context is auto-attached.
+
+## Quick Start (Supabase)
 
 ```bash
 npm install contextual-feedback
-# or
-yarn add contextual-feedback
-# or
-pnpm add contextual-feedback
 ```
 
-## Quick Start
+### 1. Run the setup SQL
 
-### 1. Wrap your app
+Copy from your code or import it:
+
+```ts
+import { SUPABASE_SETUP_SQL } from 'contextual-feedback/setup';
+console.log(SUPABASE_SETUP_SQL);
+// Run this in your Supabase dashboard SQL editor
+```
+
+### 2. Wrap your app
 
 ```tsx
-// app/layout.tsx (Next.js) or App.tsx
 import { FeedbackProvider, FeedbackButton } from 'contextual-feedback';
 import 'contextual-feedback/styles.css';
 
@@ -45,159 +62,114 @@ export default function Layout({ children }) {
 }
 ```
 
-### 2. Mark sections
+### 3. Create the API route
 
-Add `data-feedback-context` to any element you want users to be able to give feedback on:
-
-```tsx
-<section data-feedback-context="Pricing Table" data-feedback-id="pricing">
-  {/* Your pricing content */}
-</section>
-
-<div data-feedback-context="User Profile Card" data-feedback-id="profile-card">
-  {/* Your profile content */}
-</div>
-```
-
-### 3. Set up the API (Next.js App Router)
-
-```tsx
+```ts
 // app/api/feedback/route.ts
 import { createApiHandlers } from 'contextual-feedback/api';
-import { createPostgresAdapter } from 'contextual-feedback/adapters/postgres';
-import { Pool } from 'pg';
+import { createSupabaseAdapter } from 'contextual-feedback/adapters/supabase';
+import { createClient } from '@supabase/supabase-js';
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-const adapter = createPostgresAdapter({ pool });
+const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_KEY!);
+const adapter = createSupabaseAdapter({ client: supabase });
 
-const { GET, POST } = createApiHandlers({
+const { GET, POST, PATCH, COUNT, TRIAGE, RESOLVE } = createApiHandlers({
   adapter,
-  getUserEmail: async (request) => {
-    // Return current user's email, or null for anonymous
-    return request.headers.get('x-user-email');
-  }
+  getUserEmail: async (request) => request.headers.get('x-user-email'),
 });
 
 export { GET, POST };
 ```
 
-### 4. Create the database table
+Done. Users can now click the feedback button, highlight sections, and submit.
 
-```sql
-CREATE TABLE feedback (
-  id VARCHAR(100) PRIMARY KEY,
-  user_email VARCHAR(255) NOT NULL,
-  page_url VARCHAR(1000) NOT NULL,
-  feedback_text TEXT NOT NULL,
-  status VARCHAR(50) DEFAULT 'Pending',
-  context VARCHAR(255),
-  element_id VARCHAR(255),
-  admin_notes TEXT,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX idx_feedback_status ON feedback(status);
-CREATE INDEX idx_feedback_created_at ON feedback(created_at DESC);
-```
-
-Done! Users can now click the feedback button, see highlighted sections, and submit targeted feedback.
-
-### 5. Add an admin page (optional)
-
-```tsx
-// app/admin/feedback/page.tsx
-import { FeedbackList } from 'contextual-feedback';
-
-export default async function AdminFeedbackPage() {
-  return (
-    <div className="p-6">
-      <h1 className="text-2xl font-bold mb-6">Feedback</h1>
-      <FeedbackList />
-    </div>
-  );
-}
-```
-
-## Database Adapters
-
-### PostgreSQL
+## Quick Start (Postgres)
 
 ```ts
-import { createPostgresAdapter } from 'contextual-feedback/adapters/postgres';
+import { createPostgresAdapter, POSTGRES_SCHEMA } from 'contextual-feedback/adapters/postgres';
 import { Pool } from 'pg';
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+
+// Run POSTGRES_SCHEMA in your database first, then:
 const adapter = createPostgresAdapter({ pool });
 ```
 
-### Supabase
+## Authorization
+
+Admin endpoints (PATCH, TRIAGE, RESOLVE) can be gated with an `authorize` callback:
 
 ```ts
-import { createSupabaseAdapter } from 'contextual-feedback/adapters/supabase';
-import { createClient } from '@supabase/supabase-js';
-
-const supabase = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_KEY!
-);
-const adapter = createSupabaseAdapter({ client: supabase });
+const handlers = createApiHandlers({
+  adapter,
+  authorize: async (request) => {
+    const session = await getServerSession(request);
+    return session?.user?.role === 'admin';
+  },
+});
 ```
 
-### In-Memory (Development)
+GET, POST, and COUNT remain open. If `authorize` is not provided, all endpoints are unrestricted.
+
+## AI Agent Integration
+
+### Triage
 
 ```ts
-import { createMemoryAdapter } from 'contextual-feedback/adapters/memory';
-
-const adapter = createMemoryAdapter();
+const res = await fetch('/api/feedback/triage');
+const { items, summary } = await res.json();
+// items: [{ id, feedback, page, section, category, from, status, submittedAt }]
+// summary: { pending, inReview, total }
 ```
 
-### Custom Adapter
-
-Implement the `FeedbackAdapter` interface:
+### Format for AI
 
 ```ts
-interface FeedbackAdapter {
-  getAll(status?: FeedbackStatus): Promise<Feedback[]>;
-  getById(id: string): Promise<Feedback | null>;
-  add(input: FeedbackInput): Promise<Feedback>;
-  update(id: string, updates: FeedbackUpdate): Promise<Feedback | null>;
-  delete?(id: string): Promise<boolean>;
-  getCount?(status?: FeedbackStatus): Promise<number>;
-}
+import { formatForAI } from 'contextual-feedback/ai';
+
+const feedback = await adapter.getAll('Pending');
+const markdown = formatForAI(feedback);
+// Pass markdown to your AI agent as context
+```
+
+### Resolve
+
+```ts
+await fetch('/api/feedback/resolve', {
+  method: 'POST',
+  body: JSON.stringify({
+    resolutions: [
+      { id: 'abc-123', status: 'Done', adminNotes: 'Fixed in commit abc123' },
+      { id: 'def-456', status: 'Rejected', adminNotes: 'Working as intended' },
+    ],
+  }),
+});
+```
+
+## Categories
+
+Feedback can be categorized: `bug`, `feature`, `praise`, `question`, `other`.
+
+```ts
+// Submit with category
+await fetch('/api/feedback', {
+  method: 'POST',
+  body: JSON.stringify({
+    feedbackText: 'Login button is broken',
+    pageUrl: '/login',
+    category: 'bug',
+  }),
+});
 ```
 
 ## Components
-
-### `<FeedbackList>`
-
-Admin component to view and manage feedback.
-
-```tsx
-<FeedbackList
-  apiEndpoint="/api/feedback"     // Default
-  statusFilter="Pending"          // Optional: filter by status
-  showCopyButtons={true}          // Show copy-to-clipboard buttons
-  dateLocale="en-US"              // Date formatting locale
-/>
-```
-
-**Features:**
-- Expandable rows showing full feedback text
-- Inline status dropdown (updates via API)
-- Copy feedback as JSON
-- Context shown as blue badge
-- Loading and error states
 
 ### `<FeedbackProvider>`
 
 Wraps your app and provides feedback context.
 
 ```tsx
-<FeedbackProvider
-  apiEndpoint="/api/feedback"  // Default
-  onSubmit={async (feedback) => { /* custom handler */ }}
->
+<FeedbackProvider apiEndpoint="/api/feedback">
   {children}
 </FeedbackProvider>
 ```
@@ -207,93 +179,72 @@ Wraps your app and provides feedback context.
 Floating button to enter/exit feedback mode.
 
 ```tsx
-<FeedbackButton
-  position="right"  // 'right' | 'left' | 'bottom-right' | 'bottom-left'
-  className="my-custom-class"
+<FeedbackButton position="right" /> {/* 'right' | 'left' | 'bottom-right' | 'bottom-left' */}
+```
+
+### `<FeedbackList>`
+
+Admin component to view and manage feedback.
+
+```tsx
+<FeedbackList
+  apiEndpoint="/api/feedback"
+  statusFilter="Pending"
+  pageSize={20}
+  showCopyButtons={true}
+  dateLocale="en-US"
 />
 ```
 
 ### `useFeedback()` Hook
 
-Access feedback state programmatically:
-
 ```tsx
-const {
-  isFeedbackMode,      // boolean - is feedback mode active?
-  toggleFeedbackMode,  // () => void - toggle feedback mode
-  openDialog,          // (context?, elementId?) => void - open dialog
-  closeDialog,         // () => void - close dialog
-} = useFeedback();
+const { isFeedbackMode, toggleFeedbackMode, openDialog, closeDialog } = useFeedback();
 ```
 
-## API Endpoints
+## Database Adapters
 
-The `createApiHandlers` function returns handlers for:
+| Adapter | Import | Use case |
+|---------|--------|----------|
+| Supabase | `contextual-feedback/adapters/supabase` | Production with Supabase |
+| PostgreSQL | `contextual-feedback/adapters/postgres` | Any Postgres database |
+| Memory | `contextual-feedback/adapters/memory` | Development and testing |
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/feedback` | List all feedback (optional `?status=Pending`) |
-| POST | `/api/feedback` | Submit new feedback |
-| PATCH | `/api/feedback/[id]` | Update status/notes |
-| GET | `/api/feedback/count` | Get count (optional `?status=Pending`) |
+Or implement the `FeedbackAdapter` interface for custom storage.
 
-## Feedback Object
+## Schema Reference
+
+| Column | Type | Default | Constraint |
+|--------|------|---------|------------|
+| id | UUID | gen_random_uuid() | PRIMARY KEY |
+| user_email | VARCHAR(255) | — | NOT NULL |
+| page_url | VARCHAR(2000) | — | NOT NULL |
+| feedback_text | TEXT | — | NOT NULL |
+| status | VARCHAR(50) | 'Pending' | CHECK: Pending, In Review, Done, Rejected |
+| category | VARCHAR(50) | NULL | CHECK: bug, feature, praise, question, other |
+| context | VARCHAR(255) | NULL | Section name |
+| element_id | VARCHAR(255) | NULL | DOM element ID |
+| admin_notes | TEXT | NULL | — |
+| resolved_at | TIMESTAMPTZ | NULL | Auto-set on Done/Rejected |
+| created_at | TIMESTAMPTZ | NOW() | — |
+| updated_at | TIMESTAMPTZ | NOW() | Auto-updated via trigger |
+
+### Row Level Security (Supabase)
 
 ```ts
-interface Feedback {
-  id: string;
-  userEmail: string;
-  pageUrl: string;
-  feedbackText: string;
-  status: 'Pending' | 'In Review' | 'Done' | 'Rejected';
-  context?: string;      // e.g., "Pricing Table"
-  elementId?: string;    // e.g., "pricing"
-  adminNotes?: string;
-  createdAt: string;
-  updatedAt: string;
-}
+import { SUPABASE_RLS_SQL } from 'contextual-feedback/setup';
+// Run in SQL editor to enable RLS with admin/user policies
 ```
 
-## Styling
+Requires a `user_profiles` table with `id` (matches auth.uid()) and `role` columns.
 
-Import the default styles:
+## Styling
 
 ```tsx
 import 'contextual-feedback/styles.css';
 ```
 
-Or copy and customize. All classes are prefixed with `cf-`:
-
-- `.cf-section-active` - Highlighted section in feedback mode
-- `.cf-central-button` - "General Feedback" button
-- `.cf-floating-button` - The feedback toggle button
-- `.cf-dialog` - The feedback dialog
-- `.cf-dialog-overlay` - Dialog backdrop
-
-## Section Naming Tips
-
-Use clear, consistent names:
-
-```tsx
-// Good
-data-feedback-context="User Profile Card"
-data-feedback-context="Pricing Table"
-data-feedback-context="Navigation Menu"
-
-// Bad
-data-feedback-context="div1"
-data-feedback-context="section"
-```
-
-Nest contexts for granularity:
-
-```tsx
-<section data-feedback-context="Dashboard" data-feedback-id="dashboard">
-  <div data-feedback-context="Revenue Chart" data-feedback-id="revenue-chart">
-    {/* Inner context takes precedence when clicked */}
-  </div>
-</section>
-```
+All classes prefixed with `cf-`. Override or copy to customize.
 
 ## License
 
