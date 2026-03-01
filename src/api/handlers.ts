@@ -1,4 +1,4 @@
-import { FeedbackAdapter, FeedbackStatus, FeedbackUpdate, validateFeedbackInput } from '../lib/types';
+import { Feedback, FeedbackAdapter, FeedbackStatus, FeedbackUpdate, validateFeedbackInput } from '../lib/types';
 
 export interface ApiConfig {
   adapter: FeedbackAdapter;
@@ -7,6 +7,10 @@ export interface ApiConfig {
   /** Optional authorization callback for admin endpoints (PATCH, TRIAGE, RESOLVE).
    *  Return true to allow, false to deny. If not provided, all requests are allowed. */
   authorize?: (request: Request) => Promise<boolean>;
+  /** Called after a new feedback item is successfully created. Fire-and-forget. */
+  onSubmit?: (feedback: Feedback) => Promise<void>;
+  /** Called for each item resolved via the RESOLVE endpoint. Fire-and-forget. */
+  onResolve?: (feedback: Feedback, updates: FeedbackUpdate) => Promise<void>;
 }
 
 /**
@@ -69,14 +73,17 @@ export function createApiHandlers(config: ApiConfig) {
      */
     async POST(request: Request): Promise<Response> {
       try {
-        const userEmail = getUserEmail ? await getUserEmail(request) : 'anonymous';
         const body = await request.json();
-        const { feedbackText, pageUrl, context, elementId, category } = body;
+        const { feedbackText, pageUrl, context, elementId, category, userEmail: bodyEmail } = body;
+
+        // Prefer client-provided email, fall back to server callback, then 'anonymous'
+        const serverEmail = getUserEmail ? await getUserEmail(request) : null;
+        const userEmail = (bodyEmail?.trim() || serverEmail || 'anonymous');
 
         const validationErrors = validateFeedbackInput({
           feedbackText,
           pageUrl,
-          userEmail: userEmail || 'anonymous',
+          userEmail,
           category,
         });
 
@@ -102,13 +109,17 @@ export function createApiHandlers(config: ApiConfig) {
         }
 
         const feedback = await adapter.add({
-          userEmail: (userEmail || 'anonymous').trim(),
+          userEmail: userEmail.trim(),
           pageUrl: pageUrl.trim(),
           feedbackText: feedbackText.trim(),
           context: context?.trim() || undefined,
           elementId: elementId?.trim() || undefined,
           category: category || undefined,
         });
+
+        if (config.onSubmit) {
+          config.onSubmit(feedback).catch(console.error);
+        }
 
         return new Response(JSON.stringify(feedback), {
           status: 201,
@@ -310,6 +321,16 @@ export function createApiHandlers(config: ApiConfig) {
           for (const { id, ...update } of updates) {
             const updated = await adapter.update(id, update);
             if (updated) results.push(updated);
+          }
+        }
+
+        if (config.onResolve) {
+          for (const result of results) {
+            const matchingUpdate = updates.find(u => u.id === result.id);
+            if (matchingUpdate) {
+              const { id: _id, ...updateFields } = matchingUpdate;
+              config.onResolve(result, updateFields).catch(console.error);
+            }
           }
         }
 

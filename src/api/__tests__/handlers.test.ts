@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { createApiHandlers } from '../handlers';
 import { createMemoryAdapter } from '../../lib/adapters/memory';
 import { FeedbackAdapter } from '../../lib/types';
@@ -440,6 +440,150 @@ describe('createApiHandlers', () => {
         })
       );
       expect(postRes.status).toBe(201);
+    });
+  });
+
+  describe('POST with client-provided userEmail', () => {
+    it('prefers body userEmail over getUserEmail', async () => {
+      const res = await handlers.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Bug',
+          pageUrl: '/page',
+          userEmail: 'client@example.com',
+        })
+      );
+
+      expect(res.status).toBe(201);
+      const data = await res.json();
+      expect(data.userEmail).toBe('client@example.com');
+    });
+
+    it('falls back to getUserEmail when body userEmail is absent', async () => {
+      const res = await handlers.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Bug',
+          pageUrl: '/page',
+        })
+      );
+
+      const data = await res.json();
+      expect(data.userEmail).toBe('anonymous@test.local');
+    });
+
+    it('trims whitespace from body email', async () => {
+      const res = await handlers.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Bug',
+          pageUrl: '/page',
+          userEmail: '  user@example.com  ',
+        })
+      );
+
+      expect(res.status).toBe(201);
+      const data = await res.json();
+      expect(data.userEmail).toBe('user@example.com');
+    });
+  });
+
+  describe('onSubmit hook', () => {
+    it('calls onSubmit after successful POST', async () => {
+      const onSubmit = vi.fn().mockResolvedValue(undefined);
+      const h = createApiHandlers({
+        adapter,
+        getUserEmail: async () => 'u@t.com',
+        onSubmit,
+      });
+
+      const res = await h.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Test',
+          pageUrl: '/page',
+        })
+      );
+
+      expect(res.status).toBe(201);
+      // Allow microtask to flush fire-and-forget
+      await new Promise(r => setTimeout(r, 0));
+      expect(onSubmit).toHaveBeenCalledOnce();
+      expect(onSubmit.mock.calls[0][0].feedbackText).toBe('Test');
+    });
+
+    it('does not affect response when onSubmit throws', async () => {
+      const onSubmit = vi.fn().mockRejectedValue(new Error('hook failed'));
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const h = createApiHandlers({
+        adapter,
+        getUserEmail: async () => 'u@t.com',
+        onSubmit,
+      });
+
+      const res = await h.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Test',
+          pageUrl: '/page',
+        })
+      );
+
+      expect(res.status).toBe(201);
+      await new Promise(r => setTimeout(r, 0));
+      expect(onSubmit).toHaveBeenCalledOnce();
+      consoleSpy.mockRestore();
+    });
+  });
+
+  describe('onResolve hook', () => {
+    it('calls onResolve for each resolved item', async () => {
+      const onResolve = vi.fn().mockResolvedValue(undefined);
+      const h = createApiHandlers({
+        adapter,
+        getUserEmail: async () => 'u@t.com',
+        onResolve,
+      });
+
+      const fb1 = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'A' });
+      const fb2 = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'B' });
+
+      const res = await h.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [
+            { id: fb1.id, status: 'Done', adminNotes: 'Fixed' },
+            { id: fb2.id, status: 'Rejected' },
+          ],
+        })
+      );
+
+      expect(res.status).toBe(200);
+      await new Promise(r => setTimeout(r, 0));
+      expect(onResolve).toHaveBeenCalledTimes(2);
+      expect(onResolve.mock.calls[0][0].id).toBe(fb1.id);
+      expect(onResolve.mock.calls[0][1].status).toBe('Done');
+      expect(onResolve.mock.calls[1][0].id).toBe(fb2.id);
+      expect(onResolve.mock.calls[1][1].status).toBe('Rejected');
+    });
+
+    it('does not affect response when onResolve throws', async () => {
+      const onResolve = vi.fn().mockRejectedValue(new Error('hook failed'));
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const h = createApiHandlers({
+        adapter,
+        getUserEmail: async () => 'u@t.com',
+        onResolve,
+      });
+
+      const fb = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'A' });
+
+      const res = await h.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [{ id: fb.id, status: 'Done' }],
+        })
+      );
+
+      expect(res.status).toBe(200);
+      await new Promise(r => setTimeout(r, 0));
+      expect(onResolve).toHaveBeenCalledOnce();
+      consoleSpy.mockRestore();
     });
   });
 });

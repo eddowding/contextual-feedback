@@ -13,6 +13,7 @@ export interface FeedbackDialogProps {
     pageUrl: string;
     context?: string;
     elementId?: string;
+    userEmail?: string;
   }) => Promise<void>;
 }
 
@@ -20,8 +21,17 @@ export function FeedbackDialog({
   apiEndpoint = '/api/feedback',
   onSubmit
 }: FeedbackDialogProps = {}) {
-  const { isOpen, closeDialog, context: providedContext, elementId: providedElementId } = useFeedback();
+  const {
+    isOpen,
+    closeDialog,
+    context: providedContext,
+    elementId: providedElementId,
+    mode,
+    collectEmail,
+    defaultEmail,
+  } = useFeedback();
   const [feedback, setFeedback] = useState('');
+  const [email, setEmail] = useState(defaultEmail || '');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -31,7 +41,7 @@ export function FeedbackDialog({
   const [selectedContext, setSelectedContext] = useState<string>('General Page');
   const [availableContexts, setAvailableContexts] = useState<string[]>(['General Page']);
 
-  // Detect context when dialog opens
+  // Detect context and reset email when dialog opens
   useEffect(() => {
     if (isOpen) {
       const contexts = getPageContexts();
@@ -48,8 +58,9 @@ export function FeedbackDialog({
         setSelectedContext(detected.context);
       }
       setIsEditingContext(false);
+      setEmail(defaultEmail || '');
     }
-  }, [isOpen, providedContext, providedElementId]);
+  }, [isOpen, providedContext, providedElementId, defaultEmail]);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -61,6 +72,7 @@ export function FeedbackDialog({
       pageUrl: typeof window !== 'undefined' ? window.location.href : '',
       context: selectedContext !== 'General Page' ? selectedContext : undefined,
       elementId: detectedElementId,
+      ...(collectEmail !== 'never' && email.trim() ? { userEmail: email.trim() } : {}),
     };
 
     try {
@@ -95,6 +107,10 @@ export function FeedbackDialog({
 
   if (!isOpen) return null;
 
+  const showEmail = collectEmail !== 'never';
+  const emailRequired = collectEmail === 'required';
+  const isSubmitDisabled = isSubmitting || !feedback.trim() || (emailRequired && !email.trim());
+
   return (
     <div className="cf-dialog-overlay" onClick={closeDialog}>
       <div className="cf-dialog" onClick={e => e.stopPropagation()}>
@@ -116,38 +132,59 @@ export function FeedbackDialog({
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="cf-form">
-            {/* Context Section */}
-            <div className="cf-context-box">
-              <div className="cf-context-content">
-                <div className="cf-context-label">About:</div>
-                <div className="cf-context-value">
-                  {isEditingContext ? (
-                    <select
-                      value={selectedContext}
-                      onChange={(e) => setSelectedContext(e.target.value)}
-                      className="cf-context-select"
-                    >
-                      {availableContexts.map((option) => (
-                        <option key={option} value={option}>{option}</option>
-                      ))}
-                    </select>
-                  ) : (
-                    selectedContext
-                  )}
+            {/* Context Section — hidden in simple mode */}
+            {mode === 'targeted' && (
+              <div className="cf-context-box">
+                <div className="cf-context-content">
+                  <div className="cf-context-label">About:</div>
+                  <div className="cf-context-value">
+                    {isEditingContext ? (
+                      <select
+                        value={selectedContext}
+                        onChange={(e) => setSelectedContext(e.target.value)}
+                        className="cf-context-select"
+                      >
+                        {availableContexts.map((option) => (
+                          <option key={option} value={option}>{option}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      selectedContext
+                    )}
+                  </div>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => setIsEditingContext(!isEditingContext)}
+                  className="cf-context-edit"
+                  title={isEditingContext ? 'Done' : 'Edit'}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                  </svg>
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => setIsEditingContext(!isEditingContext)}
-                className="cf-context-edit"
-                title={isEditingContext ? 'Done' : 'Edit'}
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                </svg>
-              </button>
-            </div>
+            )}
+
+            {/* Email field — shown when collectEmail is 'optional' or 'required' */}
+            {showEmail && (
+              <div className="cf-field">
+                <label htmlFor="cf-email" className="cf-label">
+                  Email{emailRequired ? '' : ' (optional)'}
+                </label>
+                <input
+                  id="cf-email"
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="cf-input"
+                  placeholder="your@email.com"
+                  required={emailRequired}
+                  disabled={isSubmitting}
+                />
+              </div>
+            )}
 
             <div className="cf-field">
               <label htmlFor="cf-feedback" className="cf-label">What's on your mind?</label>
@@ -173,7 +210,7 @@ export function FeedbackDialog({
               <button type="button" onClick={closeDialog} disabled={isSubmitting} className="cf-btn cf-btn-secondary">
                 Cancel
               </button>
-              <button type="submit" disabled={isSubmitting || !feedback.trim()} className="cf-btn cf-btn-primary">
+              <button type="submit" disabled={isSubmitDisabled} className="cf-btn cf-btn-primary">
                 {isSubmitting ? (
                   <>
                     <svg className="cf-spinner" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

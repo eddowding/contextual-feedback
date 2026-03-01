@@ -10,10 +10,22 @@ export interface FeedbackButtonProps {
 }
 
 /**
- * Floating button to toggle feedback mode
+ * Floating button to toggle feedback mode (targeted) or open dialog directly (simple)
  */
 export function FeedbackButton({ position = 'right', className }: FeedbackButtonProps) {
-  const { isFeedbackMode, toggleFeedbackMode } = useFeedback();
+  const { isFeedbackMode, toggleFeedbackMode, isActivated, mode, openDialog } = useFeedback();
+
+  if (!isActivated) return null;
+
+  const handleClick = () => {
+    if (mode === 'simple') {
+      openDialog('General Page');
+    } else {
+      toggleFeedbackMode();
+    }
+  };
+
+  const isActive = mode === 'targeted' && isFeedbackMode;
 
   const positionClasses: Record<string, string> = {
     'right': 'cf-button-right',
@@ -24,10 +36,10 @@ export function FeedbackButton({ position = 'right', className }: FeedbackButton
 
   return (
     <button
-      onClick={toggleFeedbackMode}
-      className={`cf-floating-button ${positionClasses[position]} ${isFeedbackMode ? 'cf-button-active' : ''} ${className || ''}`}
-      title={isFeedbackMode ? 'Exit feedback mode (ESC)' : 'Enter feedback mode'}
-      aria-label={isFeedbackMode ? 'Exit feedback mode' : 'Give feedback'}
+      onClick={handleClick}
+      className={`cf-floating-button ${positionClasses[position]} ${isActive ? 'cf-button-active' : ''} ${className || ''}`}
+      title={isActive ? 'Exit feedback mode (ESC)' : 'Give feedback'}
+      aria-label={isActive ? 'Exit feedback mode' : 'Give feedback'}
     >
       <svg
         width="20"
@@ -42,7 +54,7 @@ export function FeedbackButton({ position = 'right', className }: FeedbackButton
         <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
       </svg>
       <span className="cf-button-text">
-        {isFeedbackMode ? 'Exit' : 'Feedback'}
+        {isActive ? 'Exit' : 'Feedback'}
       </span>
     </button>
   );

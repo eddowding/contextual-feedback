@@ -3,10 +3,15 @@
 import { createContext, useContext, useState, useCallback, ReactNode } from 'react';
 import { FeedbackDialog } from './FeedbackDialog';
 import { FeedbackHoverHandler } from './FeedbackHoverHandler';
+import { useUrlParamActivation } from '../lib/useUrlParamActivation';
 
 export interface FeedbackContextType {
   isOpen: boolean;
   isFeedbackMode: boolean;
+  isActivated: boolean;
+  mode: 'targeted' | 'simple';
+  collectEmail: 'never' | 'optional' | 'required';
+  defaultEmail?: string;
   openDialog: (context?: string, elementId?: string) => void;
   openFeedbackDialog: () => void;
   closeDialog: () => void;
@@ -35,17 +40,32 @@ export interface FeedbackProviderProps {
     pageUrl: string;
     context?: string;
     elementId?: string;
+    userEmail?: string;
   }) => Promise<void>;
   /** Custom dialog component */
   DialogComponent?: React.ComponentType;
+  /** URL parameter name that activates feedback. When set, feedback UI only
+   *  appears if ?{urlParam}=true is in the URL (persisted to sessionStorage). */
+  urlParam?: string;
+  /** 'targeted' shows hover-to-select sections; 'simple' opens dialog directly. Default: 'targeted' */
+  mode?: 'targeted' | 'simple';
+  /** Whether to collect email from users. Default: 'never' */
+  collectEmail?: 'never' | 'optional' | 'required';
+  /** Pre-fill email field (e.g. from auth context) */
+  defaultEmail?: string;
 }
 
 export function FeedbackProvider({
   children,
   apiEndpoint = '/api/feedback',
   onSubmit,
-  DialogComponent
+  DialogComponent,
+  urlParam,
+  mode = 'targeted',
+  collectEmail = 'never',
+  defaultEmail,
 }: FeedbackProviderProps) {
+  const isActivated = useUrlParamActivation(urlParam);
   const [isOpen, setIsOpen] = useState(false);
   const [isFeedbackMode, setIsFeedbackMode] = useState(false);
   const [context, setContext] = useState<string | undefined>(undefined);
@@ -79,6 +99,10 @@ export function FeedbackProvider({
       value={{
         isOpen,
         isFeedbackMode,
+        isActivated,
+        mode,
+        collectEmail,
+        defaultEmail,
         openDialog,
         openFeedbackDialog,
         closeDialog,
@@ -88,8 +112,8 @@ export function FeedbackProvider({
       }}
     >
       {children}
-      <Dialog />
-      <FeedbackHoverHandler />
+      {isActivated && <Dialog />}
+      {isActivated && mode === 'targeted' && <FeedbackHoverHandler />}
     </FeedbackContext.Provider>
   );
 }

@@ -13,6 +13,9 @@ export type { FeedbackButtonProps } from './components/FeedbackButton';
 export { FeedbackList } from './components/FeedbackList';
 export type { FeedbackListProps, ExportFormat } from './components/FeedbackList';
 
+// Hooks
+export { useUrlParamActivation } from './lib/useUrlParamActivation';
+
 // Types
 export type {
   Feedback,

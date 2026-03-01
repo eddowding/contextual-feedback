@@ -289,6 +289,27 @@
   color: #374151;
 }
 
+.cf-input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 14px;
+  font-family: inherit;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.cf-input:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.cf-input:disabled {
+  background: #f9fafb;
+  cursor: not-allowed;
+}
+
 .cf-textarea {
   width: 100%;
   padding: 12px;
