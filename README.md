@@ -79,8 +79,10 @@ export const GET = handlers.TRIAGE;
 export const POST = handlers.RESOLVE;
 
 // app/api/feedback/[id]/route.ts
-export async function PATCH(request: Request, { params }: { params: { id: string } }) {
-  return handlers.PATCH(request, params.id);
+// Next.js 15/16: `params` is a Promise and must be awaited.
+export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  return handlers.PATCH(request, id);
 }
 
 // app/api/feedback/count/route.ts
@@ -173,7 +175,9 @@ await fetch('/api/feedback/resolve', {
 
 ## Authorization
 
-Admin endpoints (PATCH, TRIAGE, RESOLVE) can be gated:
+When you provide an `authorize` callback, every endpoint that can read or modify stored
+feedback is gated — **GET, COUNT, PATCH, TRIAGE, and RESOLVE**. GET and COUNT expose stored
+feedback (including submitter emails), so they are protected alongside the admin endpoints:
 
 ```ts
 const handlers = createApiHandlers({
@@ -185,7 +189,26 @@ const handlers = createApiHandlers({
 });
 ```
 
-GET, POST, and COUNT are open by default. If `authorize` is not provided, all endpoints are unrestricted.
+`POST` (public feedback submission) is never gated. If `authorize` is **not** provided, all
+endpoints are unrestricted (open by default) — fine for internal tools, but configure
+`authorize` for anything public-facing so feedback and emails aren't readable by anyone.
+
+## User identity
+
+The submitter's email is resolved server-side via `getUserEmail`. By default a
+client-supplied `userEmail` in the POST body is treated as untrusted (it is spoofable), so
+the server-derived email wins:
+
+```ts
+const handlers = createApiHandlers({
+  adapter,
+  getUserEmail: async (request) => getSessionEmail(request), // authoritative
+  // trustClientEmail defaults to false — server email overrides the request body.
+});
+```
+
+Set `trustClientEmail: true` to preserve the legacy behaviour where the client body email is
+preferred (only safe when the client is trusted, e.g. a server-to-server integration).
 
 ## Categories
 

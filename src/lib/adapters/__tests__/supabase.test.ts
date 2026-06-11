@@ -45,14 +45,14 @@ describe('createSupabaseAdapter', () => {
   });
 
   it('calls from() with correct table name', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     const adapter = createSupabaseAdapter({ client: client as any });
     await adapter.getAll();
     expect(client.from).toHaveBeenCalledWith('feedback');
   });
 
   it('uses custom table name', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     const adapter = createSupabaseAdapter({ client: client as any, tableName: 'my_feedback' });
     await adapter.getAll();
     expect(client.from).toHaveBeenCalledWith('my_feedback');
@@ -74,7 +74,7 @@ describe('createSupabaseAdapter', () => {
 
     client._setResult({ data: [mockRow], error: null });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     const adapter = createSupabaseAdapter({ client: client as any });
     const results = await adapter.getAll();
 
@@ -86,7 +86,7 @@ describe('createSupabaseAdapter', () => {
   it('throws on supabase error', async () => {
     client._setResult({ data: null, error: { message: 'Auth error' } });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     const adapter = createSupabaseAdapter({ client: client as any });
     await expect(adapter.getAll()).rejects.toThrow('Auth error');
   });

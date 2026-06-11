@@ -57,8 +57,10 @@ export interface FeedbackProviderProps {
 
 export function FeedbackProvider({
   children,
-  apiEndpoint = '/api/feedback',
-  onSubmit,
+  // apiEndpoint and onSubmit are part of the public prop API but consumed by child
+  // components / future wiring rather than the provider body. Prefixed to mark intentional.
+  apiEndpoint: _apiEndpoint = '/api/feedback',
+  onSubmit: _onSubmit,
   DialogComponent,
   urlParam,
   mode = 'targeted',

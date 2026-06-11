@@ -79,7 +79,7 @@ describe('validateFeedbackInput', () => {
   });
 
   it('rejects invalid category', () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     const errors = validateFeedbackInput({ category: 'invalid' as any });
     expect(errors).toHaveLength(1);
     expect(errors[0].field).toBe('category');

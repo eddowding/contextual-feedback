@@ -4,9 +4,15 @@ export interface ApiConfig {
   adapter: FeedbackAdapter;
   /** Function to get current user email from request */
   getUserEmail?: (request: Request) => Promise<string | null>;
-  /** Optional authorization callback for admin endpoints (PATCH, TRIAGE, RESOLVE).
+  /** Optional authorization callback. When provided it gates every read/admin endpoint
+   *  (GET, COUNT, PATCH, TRIAGE, RESOLVE) — GET/COUNT can leak feedback (incl. emails) to
+   *  any caller, so they are protected too. POST (public submission) is never gated.
    *  Return true to allow, false to deny. If not provided, all requests are allowed. */
   authorize?: (request: Request) => Promise<boolean>;
+  /** When false (default), the server `getUserEmail` result OVERRIDES any client-supplied
+   *  `userEmail` in the request body, since a client-supplied identity is spoofable.
+   *  When true, the client body email is preferred (legacy behaviour). */
+  trustClientEmail?: boolean;
   /** Called after a new feedback item is successfully created. Fire-and-forget. */
   onSubmit?: (feedback: Feedback) => Promise<void>;
   /** Called for each item resolved via the RESOLVE endpoint. Fire-and-forget. */
@@ -28,7 +34,7 @@ export interface ApiConfig {
  * ```
  */
 export function createApiHandlers(config: ApiConfig) {
-  const { adapter, getUserEmail, authorize } = config;
+  const { adapter, getUserEmail, authorize, trustClientEmail = false } = config;
 
   async function checkAuth(request: Request): Promise<Response | null> {
     if (!authorize) return null;
@@ -49,6 +55,9 @@ export function createApiHandlers(config: ApiConfig) {
      */
     async GET(request: Request): Promise<Response> {
       try {
+        const authResponse = await checkAuth(request);
+        if (authResponse) return authResponse;
+
         const url = new URL(request.url);
         const status = url.searchParams.get('status') as FeedbackStatus | null;
 
@@ -76,9 +85,13 @@ export function createApiHandlers(config: ApiConfig) {
         const body = await request.json();
         const { feedbackText, pageUrl, context, elementId, category, userEmail: bodyEmail } = body;
 
-        // Prefer client-provided email, fall back to server callback, then 'anonymous'
+        // Resolve the submitter's email. A client-supplied body email is spoofable, so by
+        // default the server-derived email (getUserEmail) takes precedence. Only when
+        // `trustClientEmail` is true does the client body email win (legacy behaviour).
         const serverEmail = getUserEmail ? await getUserEmail(request) : null;
-        const userEmail = (bodyEmail?.trim() || serverEmail || 'anonymous');
+        const userEmail = trustClientEmail
+          ? (bodyEmail?.trim() || serverEmail || 'anonymous')
+          : (serverEmail || bodyEmail?.trim() || 'anonymous');
 
         const validationErrors = validateFeedbackInput({
           feedbackText,
@@ -194,6 +207,9 @@ export function createApiHandlers(config: ApiConfig) {
      */
     async COUNT(request: Request): Promise<Response> {
       try {
+        const authResponse = await checkAuth(request);
+        if (authResponse) return authResponse;
+
         const url = new URL(request.url);
         const status = url.searchParams.get('status') as FeedbackStatus | null;
 

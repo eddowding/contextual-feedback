@@ -1,4 +1,6 @@
 import { defineConfig } from 'tsup';
+import { copyFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 export default defineConfig([
   {
@@ -11,6 +13,14 @@ export default defineConfig([
     sourcemap: true,
     clean: true,
     external: ['react', 'react-dom'],
+    // Ship the stylesheet alongside the build so the
+    // `contextual-feedback/styles.css` export resolves for consumers.
+    onSuccess: async () => {
+      copyFileSync(
+        resolve(__dirname, 'src/styles.css'),
+        resolve(__dirname, 'dist/styles.css')
+      );
+    },
   },
   {
     // Server entries (no 'use client')

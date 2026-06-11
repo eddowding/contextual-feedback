@@ -35,7 +35,7 @@ export function FeedbackDialog({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
-  const [detectedContext, setDetectedContext] = useState<string>('General Page');
+  const [, setDetectedContext] = useState<string>('General Page');
   const [detectedElementId, setDetectedElementId] = useState<string | undefined>(undefined);
   const [isEditingContext, setIsEditingContext] = useState(false);
   const [selectedContext, setSelectedContext] = useState<string>('General Page');

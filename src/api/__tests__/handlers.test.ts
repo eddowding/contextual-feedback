@@ -429,10 +429,45 @@ describe('createApiHandlers', () => {
       expect(res.status).toBe(401);
     });
 
-    it('GET and POST remain open without auth', async () => {
-      const getRes = await authedHandlers.GET(makeRequest('http://localhost/api/feedback'));
-      expect(getRes.status).toBe(200);
+    it('GET returns 401 when unauthorized', async () => {
+      const res = await authedHandlers.GET(makeRequest('http://localhost/api/feedback'));
+      expect(res.status).toBe(401);
+      const data = await res.json();
+      expect(data.error).toBe('Unauthorized');
+    });
 
+    it('COUNT returns 401 when unauthorized', async () => {
+      const res = await authedHandlers.COUNT(
+        makeRequest('http://localhost/api/feedback/count')
+      );
+      expect(res.status).toBe(401);
+      const data = await res.json();
+      expect(data.error).toBe('Unauthorized');
+    });
+
+    it('GET succeeds when authorize allows', async () => {
+      await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'Test' });
+      const req = new Request('http://localhost/api/feedback', {
+        headers: { 'x-admin-token': 'secret' },
+      });
+      const res = await authedHandlers.GET(req);
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data).toHaveLength(1);
+    });
+
+    it('COUNT succeeds when authorize allows', async () => {
+      await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'Test' });
+      const req = new Request('http://localhost/api/feedback/count', {
+        headers: { 'x-admin-token': 'secret' },
+      });
+      const res = await authedHandlers.COUNT(req);
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.count).toBe(1);
+    });
+
+    it('POST (public submission) remains open without auth', async () => {
       const postRes = await authedHandlers.POST(
         jsonRequest('http://localhost/api/feedback', {
           feedbackText: 'Test',
@@ -444,8 +479,29 @@ describe('createApiHandlers', () => {
   });
 
   describe('POST with client-provided userEmail', () => {
-    it('prefers body userEmail over getUserEmail', async () => {
+    it('server getUserEmail OVERRIDES body userEmail by default (trustClientEmail=false)', async () => {
+      // Default handlers use getUserEmail: () => 'anonymous@test.local'.
+      // A spoofed client email in the body must NOT win.
       const res = await handlers.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Bug',
+          pageUrl: '/page',
+          userEmail: 'client@example.com',
+        })
+      );
+
+      expect(res.status).toBe(201);
+      const data = await res.json();
+      expect(data.userEmail).toBe('anonymous@test.local');
+    });
+
+    it('falls back to body email when server getUserEmail returns null', async () => {
+      const h = createApiHandlers({
+        adapter,
+        getUserEmail: async () => null,
+      });
+
+      const res = await h.POST(
         jsonRequest('http://localhost/api/feedback', {
           feedbackText: 'Bug',
           pageUrl: '/page',
@@ -458,7 +514,7 @@ describe('createApiHandlers', () => {
       expect(data.userEmail).toBe('client@example.com');
     });
 
-    it('falls back to getUserEmail when body userEmail is absent', async () => {
+    it('uses getUserEmail when body userEmail is absent', async () => {
       const res = await handlers.POST(
         jsonRequest('http://localhost/api/feedback', {
           feedbackText: 'Bug',
@@ -469,9 +525,37 @@ describe('createApiHandlers', () => {
       const data = await res.json();
       expect(data.userEmail).toBe('anonymous@test.local');
     });
+  });
 
-    it('trims whitespace from body email', async () => {
-      const res = await handlers.POST(
+  describe('trustClientEmail option', () => {
+    it('prefers body userEmail when trustClientEmail=true (legacy behaviour)', async () => {
+      const h = createApiHandlers({
+        adapter,
+        getUserEmail: async () => 'server@test.local',
+        trustClientEmail: true,
+      });
+
+      const res = await h.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Bug',
+          pageUrl: '/page',
+          userEmail: 'client@example.com',
+        })
+      );
+
+      expect(res.status).toBe(201);
+      const data = await res.json();
+      expect(data.userEmail).toBe('client@example.com');
+    });
+
+    it('trims whitespace from body email when trustClientEmail=true', async () => {
+      const h = createApiHandlers({
+        adapter,
+        getUserEmail: async () => null,
+        trustClientEmail: true,
+      });
+
+      const res = await h.POST(
         jsonRequest('http://localhost/api/feedback', {
           feedbackText: 'Bug',
           pageUrl: '/page',
@@ -482,6 +566,24 @@ describe('createApiHandlers', () => {
       expect(res.status).toBe(201);
       const data = await res.json();
       expect(data.userEmail).toBe('user@example.com');
+    });
+
+    it('falls back to server email when trustClientEmail=true but no body email', async () => {
+      const h = createApiHandlers({
+        adapter,
+        getUserEmail: async () => 'server@test.local',
+        trustClientEmail: true,
+      });
+
+      const res = await h.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Bug',
+          pageUrl: '/page',
+        })
+      );
+
+      const data = await res.json();
+      expect(data.userEmail).toBe('server@test.local');
     });
   });
 

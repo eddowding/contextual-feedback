@@ -1,8 +1,7 @@
-import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // Mock browser globals for node environment
 const sessionStore: Record<string, string> = {};
-let currentSearch = '';
 
 const mockSessionStorage = {
   getItem: vi.fn((key: string) => sessionStore[key] ?? null),
@@ -23,13 +22,11 @@ vi.stubGlobal('window', mockWindow);
 vi.stubGlobal('sessionStorage', mockSessionStorage);
 
 // Track React hook calls
-let stateInitializer: (() => boolean) | boolean = false;
 let effectCb: (() => void) | null = null;
 let currentStateValue = false;
 
 vi.mock('react', () => ({
   useState: (init: boolean | (() => boolean)) => {
-    stateInitializer = init;
     const val = typeof init === 'function' ? init() : init;
     currentStateValue = val;
     return [val, (v: boolean | ((p: boolean) => boolean)) => {
@@ -47,7 +44,6 @@ describe('useUrlParamActivation', () => {
   beforeEach(() => {
     // Reset state
     Object.keys(sessionStore).forEach(k => delete sessionStore[k]);
-    currentSearch = '';
     mockWindow.location.search = '';
     effectCb = null;
     currentStateValue = false;
