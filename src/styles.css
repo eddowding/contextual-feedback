@@ -116,8 +116,23 @@
 }
 
 /* Position variants */
+/*
+ * Right/left edge tab geometry fix.
+ *
+ * Problem: with `right: 0; transform-origin: right center; rotate(-90deg)`,
+ * the CSS layout box is W×H. The transform-origin pivot sits at the layout
+ * box's right-center edge (x = viewport-right). After rotation the original
+ * bottom-right corner lands at (pivot_x + H/2, pivot_y) = VW + H/2, so the
+ * rotated tab bleeds exactly H/2 past the viewport edge.
+ *
+ * Fix: offset `right` by H/2 so the pivot lands H/2 inside the viewport.
+ * The button's padding is 12px top/bottom; combined with a 20px icon/text
+ * height this gives H = 44px → H/2 = 22px. With `right: 22px` the pivot is
+ * at VW−22 and visual right edge = VW−22+22 = VW (flush, no bleed).
+ * Mirror logic applies to `.cf-button-left`.
+ */
 .cf-button-right {
-  right: 0;
+  right: 22px;
   top: 50%;
   transform: translateY(-50%) rotate(-90deg);
   transform-origin: right center;
@@ -129,7 +144,7 @@
 }
 
 .cf-button-left {
-  left: 0;
+  left: 22px;
   top: 50%;
   transform: translateY(-50%) rotate(90deg);
   transform-origin: left center;
