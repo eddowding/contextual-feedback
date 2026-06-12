@@ -123,9 +123,9 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "rm -rf dist && tsup",
+    "build": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\" && tsup",
     "prepare": "npm run build",
-    "dev": "tsup --watch",
+    "dev": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\" && tsup --watch",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/",
     "test": "vitest run",

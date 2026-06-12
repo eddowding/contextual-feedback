@@ -1,5 +1,5 @@
 import { buildFeedbackSchemaSql } from '../schema';
-import { computeResolvedAt, Feedback, FeedbackAdapter, FeedbackInput, FeedbackStatus, FeedbackUpdate } from '../types';
+import { BulkUpdateResult, computeResolvedAt, Feedback, FeedbackAdapter, FeedbackInput, FeedbackStatus, FeedbackUpdate } from '../types';
 
 /**
  * Chainable query builder that models the Supabase PostgREST client.
@@ -208,8 +208,9 @@ export function createSupabaseAdapter(config: SupabaseConfig): FeedbackAdapter {
       return result.count ?? 0;
     },
 
-    async bulkUpdate(updates: Array<{ id: string } & FeedbackUpdate>): Promise<Feedback[]> {
+    async bulkUpdate(updates: Array<{ id: string } & FeedbackUpdate>): Promise<BulkUpdateResult> {
       const results: Feedback[] = [];
+      const failed: BulkUpdateResult['failed'] = [];
 
       for (const { id, ...update } of updates) {
         const updateData = buildUpdateData(update);
@@ -220,10 +221,11 @@ export function createSupabaseAdapter(config: SupabaseConfig): FeedbackAdapter {
         // PostgREST has no multi-statement transactions, so earlier updates in
         // this loop are already committed when a later one fails. Throwing here
         // would persist partial updates and then report total failure — instead
-        // skip the item so it surfaces in the caller's not-updated diff (the
-        // RESOLVE endpoint's `notFound` list) and can be retried.
+        // record the item in `failed` so the caller (the RESOLVE endpoint) can
+        // report it as a retryable error, distinct from a missing row.
         if (error) {
           console.error(`bulkUpdate failed for id "${id}": ${error.message}`);
+          failed.push({ id, error: error.message });
           continue;
         }
         const rows = (data ?? []) as Record<string, unknown>[];
@@ -232,7 +234,7 @@ export function createSupabaseAdapter(config: SupabaseConfig): FeedbackAdapter {
         }
       }
 
-      return results;
+      return { updated: results, failed };
     }
   };
 }

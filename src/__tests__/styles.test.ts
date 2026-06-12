@@ -95,11 +95,23 @@ describe('build configuration', () => {
     expect(tsupConfig).not.toMatch(/^\s*clean:\s*true/m);
   });
 
-  it('the build script wipes dist/ once before tsup starts', () => {
-    expect(pkg.scripts.build).toBe('rm -rf dist && tsup');
+  it('the build script wipes dist/ once, cross-platform, before tsup starts', () => {
+    expect(pkg.scripts.build).toBe(
+      'node -e "fs.rmSync(\'dist\',{recursive:true,force:true})" && tsup'
+    );
+    // `rm -rf` is not available in cmd.exe — it breaks `npm install`/`prepare`
+    // for Windows consumers and contributors.
+    for (const script of Object.values(pkg.scripts)) {
+      expect(script).not.toContain('rm -rf');
+    }
   });
 
-  it('watch mode does not clean (would leave server bundles missing until their sources change)', () => {
-    expect(pkg.scripts.dev).toBe('tsup --watch');
+  it('watch mode cleans once before tsup starts (sequential, so no race with the parallel configs)', () => {
+    // The clean runs to completion before tsup launches, and tsup --watch then
+    // performs an initial full build of both configs — so nothing goes missing,
+    // and stale chunks from renamed entries cannot linger across watch sessions.
+    expect(pkg.scripts.dev).toBe(
+      'node -e "fs.rmSync(\'dist\',{recursive:true,force:true})" && tsup --watch'
+    );
   });
 });

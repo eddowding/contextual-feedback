@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createMemoryAdapter } from '../memory';
-import { FeedbackAdapter } from '../../types';
+import { Feedback, FeedbackAdapter } from '../../types';
 
 describe('createMemoryAdapter', () => {
   let adapter: FeedbackAdapter;
@@ -252,10 +252,11 @@ describe('createMemoryAdapter', () => {
     const fb1 = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'A' });
     const fb2 = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'B' });
 
-    const results = await adapter.bulkUpdate!([
+    // The memory adapter keeps the plain-array bulkUpdate return shape.
+    const results = (await adapter.bulkUpdate!([
       { id: fb1.id, status: 'Done', adminNotes: 'Fixed' },
       { id: fb2.id, status: 'Rejected' },
-    ]);
+    ])) as Feedback[];
 
     expect(results).toHaveLength(2);
     expect(results[0].status).toBe('Done');

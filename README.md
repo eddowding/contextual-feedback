@@ -194,10 +194,16 @@ await fetch('/api/feedback/resolve', {
 });
 ```
 
-The response is `{ updated: Feedback[], notFound: string[] }` — `notFound` lists any
-requested ids that were not updated (no longer exist, or their individual update
-failed), so your agent can detect partial failure without diffing arrays and
-re-check or retry just those ids.
+The response is `{ updated: Feedback[], notFound: string[], failed: string[] }`:
+
+- `notFound` — ids whose update matched no row (deleted, never existed, or filtered by
+  row-level security). Your agent can safely drop these.
+- `failed` — ids whose individual update **errored** (db outage, expired credentials,
+  RLS misconfiguration). Retry these later; they may still exist.
+
+The status is `200` for full or partial success. When nothing was updated and at least
+one update errored, the endpoint responds `500` — so an infrastructure failure is never
+reported as an all-items-missing success.
 
 ### Server hooks
 
@@ -218,7 +224,8 @@ const handlers = createApiHandlers({
 ```
 
 Both hooks are fire-and-forget: they run after the response is determined, and any error
-they throw is logged but never affects the HTTP response.
+they produce — a rejected promise, a synchronous throw, or a plain non-promise return —
+is logged but never affects the HTTP response.
 
 ## Authorization
 
@@ -296,7 +303,7 @@ Wraps your app. Renders the dialog and hover handler automatically.
 |------|------|---------|-------------|
 | `apiEndpoint` | `string` | `'/api/feedback'` | API endpoint for submissions |
 | `onSubmit` | `(feedback) => Promise<void>` | — | Custom submit handler (bypasses API) |
-| `DialogComponent` | `React.ComponentType` | Built-in dialog | Replace the feedback dialog entirely (when set, `apiEndpoint`/`onSubmit` are not forwarded — your component owns submission) |
+| `DialogComponent` | `React.ComponentType<FeedbackDialogProps>` | Built-in dialog | Replace the feedback dialog entirely. Receives the provider's `apiEndpoint` and `onSubmit` as props, so type it as `React.ComponentType<FeedbackDialogProps>` |
 | `urlParam` | `string` | — | When set, the feedback UI only appears after visiting with `?{urlParam}=true` in the URL. Activation persists in `sessionStorage` across navigation. When unset, the UI is always shown |
 | `mode` | `'targeted' \| 'simple'` | `'targeted'` | `'targeted'` highlights sections for click-to-select; `'simple'` opens the dialog directly and hides the context box |
 | `collectEmail` | `'never' \| 'optional' \| 'required'` | `'never'` | Whether the dialog shows an email field |

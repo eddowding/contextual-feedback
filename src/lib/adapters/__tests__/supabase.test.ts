@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createSupabaseAdapter } from '../supabase';
+import type { BulkUpdateResult } from '../../types';
 
 interface QueryResult {
   data: unknown;
@@ -364,14 +365,15 @@ describe('createSupabaseAdapter', () => {
       mock.queueResult({ data: { resolved_at: null }, error: null });
       mock.queueResult({ data: [makeRow({ id: 'fb_2', status: 'Rejected' })], error: null });
 
-      const results = await makeAdapter().bulkUpdate!([
+      const result = (await makeAdapter().bulkUpdate!([
         { id: 'fb_1', status: 'Done' },
         { id: 'fb_2', status: 'Rejected' },
-      ]);
+      ])) as BulkUpdateResult;
 
-      expect(results).toHaveLength(2);
-      expect(results[0].id).toBe('fb_1');
-      expect(results[1].id).toBe('fb_2');
+      expect(result.updated).toHaveLength(2);
+      expect(result.updated[0].id).toBe('fb_1');
+      expect(result.updated[1].id).toBe('fb_2');
+      expect(result.failed).toEqual([]);
       // Update builders (indexes 1 and 3) target the right ids
       expect(mock.builders[1].eq).toHaveBeenCalledWith('id', 'fb_1');
       expect(mock.builders[3].eq).toHaveBeenCalledWith('id', 'fb_2');
@@ -383,19 +385,22 @@ describe('createSupabaseAdapter', () => {
       mock.queueResult({ data: null, error: { message: 'not found' } }); // preserve fetch ignored
       mock.queueResult({ data: [], error: null }); // update matches nothing
 
-      const results = await makeAdapter().bulkUpdate!([
+      const result = (await makeAdapter().bulkUpdate!([
         { id: 'fb_1', status: 'Done' },
         { id: 'missing', status: 'Done' },
-      ]);
+      ])) as BulkUpdateResult;
 
-      expect(results).toHaveLength(1);
-      expect(results[0].id).toBe('fb_1');
+      // Matching no rows is NOT a failure — the id is simply absent from both lists.
+      expect(result.updated).toHaveLength(1);
+      expect(result.updated[0].id).toBe('fb_1');
+      expect(result.failed).toEqual([]);
     });
 
-    it('continues past an item whose update errors and omits it from the results', async () => {
+    it('continues past an item whose update errors and reports it in failed', async () => {
       // PostgREST has no transactions, so earlier updates are already committed
       // when a later one fails — throwing would report total failure after a
-      // partial commit. Failed items are skipped and surface in the caller's diff.
+      // partial commit. Failed items are reported in `failed` so the caller can
+      // distinguish "retry later" from "row gone".
       const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
       // fb_1: preserve fetch + failing update; fb_2: preserve fetch + successful update
@@ -404,13 +409,14 @@ describe('createSupabaseAdapter', () => {
       mock.queueResult({ data: { resolved_at: null }, error: null });
       mock.queueResult({ data: [makeRow({ id: 'fb_2', status: 'Done' })], error: null });
 
-      const results = await makeAdapter().bulkUpdate!([
+      const result = (await makeAdapter().bulkUpdate!([
         { id: 'fb_1', status: 'Done' },
         { id: 'fb_2', status: 'Done' },
-      ]);
+      ])) as BulkUpdateResult;
 
-      expect(results).toHaveLength(1);
-      expect(results[0].id).toBe('fb_2');
+      expect(result.updated).toHaveLength(1);
+      expect(result.updated[0].id).toBe('fb_2');
+      expect(result.failed).toEqual([{ id: 'fb_1', error: 'Bulk failed' }]);
       expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('fb_1'));
 
       consoleSpy.mockRestore();

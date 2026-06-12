@@ -24,6 +24,8 @@ export type {
   FeedbackInput,
   FeedbackUpdate,
   FeedbackAdapter,
+  BulkUpdateFailure,
+  BulkUpdateResult,
   ValidationError,
 } from './lib/types';
 

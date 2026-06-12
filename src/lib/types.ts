@@ -38,6 +38,23 @@ export interface FeedbackUpdate {
   category?: FeedbackCategory;
 }
 
+/** A single bulkUpdate item whose update ERRORED (as opposed to matching no row). */
+export interface BulkUpdateFailure {
+  id: string;
+  error: string;
+}
+
+/**
+ * Rich bulkUpdate result that distinguishes missing rows from errored updates.
+ * `updated` holds the successfully updated items; `failed` lists ids whose
+ * individual update errored (db outage, RLS misconfiguration, …) along with the
+ * error message. Ids absent from both were missing rows.
+ */
+export interface BulkUpdateResult {
+  updated: Feedback[];
+  failed: BulkUpdateFailure[];
+}
+
 /**
  * Database adapter interface
  * Implement this to connect to your preferred database
@@ -71,13 +88,16 @@ export interface FeedbackAdapter {
   /** Bulk update multiple feedback items at once. Applies the same resolvedAt
    *  convention as update().
    *
-   *  Contract: resolves with the successfully updated items; ids that were
-   *  missing or whose update failed are omitted so callers can diff.
-   *  Implementations must either be atomic (all-or-nothing — a thrown error
-   *  means nothing was persisted, e.g. the postgres adapter's transaction) or
-   *  continue past per-item failures and omit them from the result. Never
-   *  persist partial updates and then throw. */
-  bulkUpdate?(updates: Array<{ id: string } & FeedbackUpdate>): Promise<Feedback[]>;
+   *  Contract: resolves with the successfully updated items — either as a plain
+   *  array (ids that were missing or whose update failed are omitted so callers
+   *  can diff), or as a `BulkUpdateResult` that additionally reports per-item
+   *  ERRORS in `failed`, so callers can distinguish "row gone" from "retry
+   *  later" (the supabase adapter does this, since PostgREST has no
+   *  transactions). Implementations must either be atomic (all-or-nothing — a
+   *  thrown error means nothing was persisted, e.g. the postgres adapter's
+   *  transaction) or continue past per-item failures and report/omit them.
+   *  Never persist partial updates and then throw. */
+  bulkUpdate?(updates: Array<{ id: string } & FeedbackUpdate>): Promise<Feedback[] | BulkUpdateResult>;
 }
 
 export interface ValidationError {

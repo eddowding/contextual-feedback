@@ -1,4 +1,15 @@
 import { Feedback, FeedbackAdapter, FeedbackCategory, FeedbackInput, FeedbackStatus, FeedbackUpdate, VALID_CATEGORIES, VALID_STATUSES, validateFeedbackInput } from '../lib/types';
+
+/**
+ * Invoke a fire-and-forget hook so that NOTHING it does can affect the HTTP
+ * response: a rejected promise, a synchronous throw, or a plain (non-promise)
+ * return — easy in untyped JS — are all absorbed and logged.
+ */
+function fireAndForget(run: () => unknown): void {
+  Promise.resolve()
+    .then(() => run())
+    .catch(console.error);
+}
 import { toTriageItem } from '../lib/ai';
 
 const MAX_ADMIN_NOTES_LENGTH = 5000;
@@ -77,14 +88,17 @@ function parseStatusParam(
   return { status: raw as FeedbackStatus };
 }
 
-/** Validate an optional `adminNotes` field. Returns a 400 Response on failure, null when ok. */
-function validateAdminNotes(adminNotes: unknown): Response | null {
+/** Validate an optional `adminNotes` field. Returns a 400 Response on failure, null when ok.
+ *  Pass `forId` in batch contexts (RESOLVE) so the error identifies the offending item,
+ *  matching the neighbouring status/category error formats. */
+function validateAdminNotes(adminNotes: unknown, context: { forId?: string } = {}): Response | null {
+  const suffix = context.forId !== undefined ? ` for id "${context.forId}"` : '';
   if (adminNotes !== undefined && typeof adminNotes !== 'string') {
-    return jsonResponse({ error: 'adminNotes must be a string' }, 400);
+    return jsonResponse({ error: `adminNotes must be a string${suffix}` }, 400);
   }
   if (typeof adminNotes === 'string' && adminNotes.length > MAX_ADMIN_NOTES_LENGTH) {
     return jsonResponse(
-      { error: `Admin notes must be ${MAX_ADMIN_NOTES_LENGTH} characters or less` },
+      { error: `Admin notes must be ${MAX_ADMIN_NOTES_LENGTH} characters or less${suffix}` },
       400
     );
   }
@@ -183,6 +197,15 @@ export function createApiHandlers(config: ApiConfig) {
         const parsed = await parseJsonBody(request);
         if (parsed.errorResponse) return parsed.errorResponse;
 
+        // Explicit `null` for an OPTIONAL field means "absent" — many non-JS
+        // serializers (Python/Go/Java, ORMs) emit null for missing optionals,
+        // and 0.1.0 accepted it. Normalise before type-checking so it isn't
+        // rejected as a wrong type. feedbackText/pageUrl stay strict: null was
+        // already a 400 for those.
+        for (const field of ['context', 'elementId', 'userEmail']) {
+          if (parsed.body[field] === null) delete parsed.body[field];
+        }
+
         const stringFieldError = validateStringFields(parsed.body, [
           'feedbackText', 'pageUrl', 'context', 'elementId', 'userEmail',
         ]);
@@ -231,7 +254,8 @@ export function createApiHandlers(config: ApiConfig) {
         });
 
         if (config.onSubmit) {
-          config.onSubmit(feedback).catch(console.error);
+          const { onSubmit } = config;
+          fireAndForget(() => onSubmit(feedback));
         }
 
         return new Response(JSON.stringify(feedback), {
@@ -386,10 +410,15 @@ export function createApiHandlers(config: ApiConfig) {
      * POST /api/feedback/resolve
      * Bulk-update feedback items with status + admin notes.
      *
-     * Responds 200 with `{ updated: Feedback[], notFound: string[] }` — `notFound`
-     * lists requested ids that were not updated (no longer exist, filtered by
-     * row-level security, or whose individual update failed), so an agent can
-     * detect partial failure without diffing arrays.
+     * Responds with `{ updated: Feedback[], notFound: string[], failed: string[] }`:
+     * - `notFound` — ids whose update matched no row (deleted, never existed, or
+     *   filtered by row-level security). Safe to drop.
+     * - `failed` — ids whose individual update ERRORED (db outage, bad credentials,
+     *   RLS misconfiguration). These should be retried, not treated as gone.
+     *
+     * Status is 200 for full/partial success, or 500 when nothing was updated and
+     * at least one update errored — so an infrastructure failure is never reported
+     * as an all-items-missing success.
      */
     async RESOLVE(request: Request): Promise<Response> {
       try {
@@ -408,6 +437,12 @@ export function createApiHandlers(config: ApiConfig) {
         }
 
         for (const resolution of resolutions) {
+          if (typeof resolution !== 'object' || resolution === null || Array.isArray(resolution)) {
+            return new Response(
+              JSON.stringify({ error: 'Each resolution must be an object' }),
+              { status: 400, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
           if (!resolution.id || typeof resolution.id !== 'string') {
             return new Response(
               JSON.stringify({ error: 'Each resolution must have a string id' }),
@@ -426,7 +461,7 @@ export function createApiHandlers(config: ApiConfig) {
               { status: 400, headers: { 'Content-Type': 'application/json' } }
             );
           }
-          const adminNotesError = validateAdminNotes(resolution.adminNotes);
+          const adminNotesError = validateAdminNotes(resolution.adminNotes, { forId: resolution.id });
           if (adminNotesError) return adminNotesError;
         }
 
@@ -439,43 +474,58 @@ export function createApiHandlers(config: ApiConfig) {
           })
         );
 
-        let results;
+        let results: Feedback[];
+        const failed: string[] = [];
         if (adapter.bulkUpdate) {
-          results = await adapter.bulkUpdate(updates);
+          const bulkResult = await adapter.bulkUpdate(updates);
+          if (Array.isArray(bulkResult)) {
+            results = bulkResult;
+          } else {
+            results = bulkResult.updated;
+            failed.push(...bulkResult.failed.map(f => f.id));
+          }
         } else {
           results = [];
           for (const { id, ...update } of updates) {
             // Per-item failures must not abort the loop: earlier updates are
             // already committed, so a blanket 500 would misreport them as not
-            // having happened. Failed ids surface in `notFound` alongside
-            // missing ones, so the caller can re-check/retry them.
+            // having happened. Failed ids surface in `failed` (distinct from
+            // missing-row `notFound`) so the caller can retry them.
             try {
               const updated = await adapter.update(id, update);
               if (updated) results.push(updated);
             } catch (error) {
               console.error(`Error resolving feedback "${id}":`, error);
+              failed.push(id);
             }
           }
         }
 
         if (config.onResolve) {
+          const { onResolve } = config;
           for (const result of results) {
             const matchingUpdate = updates.find(u => u.id === result.id);
             if (matchingUpdate) {
               const { id: _id, ...updateFields } = matchingUpdate;
-              config.onResolve(result, updateFields).catch(console.error);
+              fireAndForget(() => onResolve(result, updateFields));
             }
           }
         }
 
-        // Report ids that weren't updated (deleted, never existed, filtered by
-        // RLS, or whose individual update failed) so callers — especially
-        // AI-agent loops — can detect partial failure and retry those ids.
+        // `notFound`: ids whose update matched no row (deleted, never existed,
+        // or filtered by RLS) — distinct from `failed` (ids whose update
+        // errored and should be retried). When nothing succeeded and at least
+        // one update errored, respond 500 so an infrastructure failure (db
+        // outage, expired credentials) is never reported as success.
         const updatedIds = new Set(results.map(r => r.id));
-        const notFound = updates.map(u => u.id).filter(uId => !updatedIds.has(uId));
+        const failedIds = new Set(failed);
+        const notFound = updates
+          .map(u => u.id)
+          .filter(uId => !updatedIds.has(uId) && !failedIds.has(uId));
 
-        return new Response(JSON.stringify({ updated: results, notFound }), {
-          status: 200,
+        const status = results.length === 0 && failed.length > 0 ? 500 : 200;
+        return new Response(JSON.stringify({ updated: results, notFound, failed }), {
+          status,
           headers: { 'Content-Type': 'application/json' },
         });
       } catch (error) {

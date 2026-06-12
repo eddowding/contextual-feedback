@@ -416,6 +416,39 @@ describe('createApiHandlers', () => {
       );
       expect(res.status).toBe(400);
     });
+
+    it('returns 400 (not 500) for a null entry in resolutions', async () => {
+      const res = await handlers.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [null],
+        })
+      );
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toBe('Each resolution must be an object');
+    });
+
+    it('returns 400 for a string entry in resolutions', async () => {
+      const res = await handlers.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: ['fb_1'],
+        })
+      );
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toBe('Each resolution must be an object');
+    });
+
+    it('returns 400 for an array entry in resolutions', async () => {
+      const res = await handlers.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [[{ id: 'fb_1', status: 'Done' }]],
+        })
+      );
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toBe('Each resolution must be an object');
+    });
   });
 
   describe('authorize callback', () => {
@@ -726,6 +759,59 @@ describe('createApiHandlers', () => {
       expect(onSubmit).toHaveBeenCalledOnce();
       consoleSpy.mockRestore();
     });
+
+    it('does not affect response when onSubmit throws SYNCHRONOUSLY', async () => {
+      // Easy in untyped JS: a plain function that throws before returning a
+      // promise. The insert has already been persisted, so a 500 here would
+      // make the widget show an error and the user resubmit a duplicate.
+      const onSubmit = vi.fn(() => {
+        throw new Error('sync hook failure');
+      });
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const h = createApiHandlers({
+        adapter,
+        getUserEmail: async () => 'u@t.com',
+        onSubmit,
+      });
+
+      const res = await h.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Test',
+          pageUrl: '/page',
+        })
+      );
+
+      expect(res.status).toBe(201);
+      await new Promise(r => setTimeout(r, 0));
+      expect(onSubmit).toHaveBeenCalledOnce();
+      expect(consoleSpy).toHaveBeenCalled();
+      consoleSpy.mockRestore();
+    });
+
+    it('does not affect response when onSubmit returns a non-promise', async () => {
+      // A plain (non-async) JS hook returning undefined must not produce a
+      // TypeError from calling .catch on undefined.
+      const onSubmit = vi.fn(() => undefined);
+
+      const h = createApiHandlers({
+        adapter,
+        getUserEmail: async () => 'u@t.com',
+        // Untyped-JS consumers can pass a plain function — simulate that.
+        onSubmit: onSubmit as unknown as () => Promise<void>,
+      });
+
+      const res = await h.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Test',
+          pageUrl: '/page',
+        })
+      );
+
+      expect(res.status).toBe(201);
+      await new Promise(r => setTimeout(r, 0));
+      expect(onSubmit).toHaveBeenCalledOnce();
+    });
   });
 
   describe('onResolve hook', () => {
@@ -779,6 +865,35 @@ describe('createApiHandlers', () => {
       expect(res.status).toBe(200);
       await new Promise(r => setTimeout(r, 0));
       expect(onResolve).toHaveBeenCalledOnce();
+      consoleSpy.mockRestore();
+    });
+
+    it('does not affect response when onResolve throws SYNCHRONOUSLY', async () => {
+      const onResolve = vi.fn(() => {
+        throw new Error('sync hook failure');
+      });
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const h = createApiHandlers({
+        adapter,
+        getUserEmail: async () => 'u@t.com',
+        onResolve,
+      });
+
+      const fb = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'A' });
+
+      const res = await h.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [{ id: fb.id, status: 'Done' }],
+        })
+      );
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.updated).toHaveLength(1);
+      await new Promise(r => setTimeout(r, 0));
+      expect(onResolve).toHaveBeenCalledOnce();
+      expect(consoleSpy).toHaveBeenCalled();
       consoleSpy.mockRestore();
     });
   });
@@ -873,7 +988,7 @@ describe('createApiHandlers', () => {
       expect(data.notFound).toEqual(['does_not_exist']);
     });
 
-    it('RESOLVE continues past a per-item update error and reports it in notFound', async () => {
+    it('RESOLVE continues past a per-item update error and reports it in failed', async () => {
       const minimal = createMinimalAdapter(adapter);
       const realUpdate = minimal.update;
       const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -896,11 +1011,15 @@ describe('createApiHandlers', () => {
         })
       );
 
+      // Partial success: fb_2 committed, so the response must report it as
+      // updated (200), with the errored id in `failed` — NOT in `notFound`,
+      // which is reserved for rows that no longer exist.
       expect(res.status).toBe(200);
       const data = await res.json();
       expect(data.updated).toHaveLength(1);
       expect(data.updated[0].id).toBe(fb2.id);
-      expect(data.notFound).toEqual([fb1.id]);
+      expect(data.failed).toEqual([fb1.id]);
+      expect(data.notFound).toEqual([]);
 
       consoleSpy.mockRestore();
     });
@@ -1000,18 +1119,19 @@ describe('createApiHandlers', () => {
       expect(data).toEqual({ error: 'Failed to fetch triage data' });
     });
 
-    it('RESOLVE reports failed ids in notFound instead of a blanket 500 (fallback path)', async () => {
-      // Per-item failures on the no-bulkUpdate path must not become a 500:
-      // earlier items in the loop may already be committed, so the response
-      // reports what was updated and which ids need re-checking.
+    it('RESOLVE returns 500 with failed ids when every update errors (fallback path)', async () => {
+      // A total failure (db down) must NOT look like an all-items-missing
+      // success: an agent told the ids are notFound would drop them. The
+      // errored ids are reported in `failed`, and since nothing succeeded the
+      // status is 500 so the caller knows to retry the whole batch.
       const res = await failingHandlers.RESOLVE(
         jsonRequest('http://localhost/api/feedback/resolve', {
           resolutions: [{ id: 'fb_1', status: 'Done' }],
         })
       );
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(500);
       const data = await res.json();
-      expect(data).toEqual({ updated: [], notFound: ['fb_1'] });
+      expect(data).toEqual({ updated: [], notFound: [], failed: ['fb_1'] });
     });
   });
 
@@ -1295,6 +1415,61 @@ describe('createApiHandlers', () => {
     });
   });
 
+  describe('explicit null for optional POST body fields', () => {
+    // Non-JS clients (Python/Go/Java serializers, ORMs) emit explicit `null`
+    // for absent optional fields, and 0.1.0 accepted that. null means
+    // "absent", not "invalid".
+    it('accepts null context and elementId, storing the row without them', async () => {
+      const res = await handlers.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Test',
+          pageUrl: '/page',
+          context: null,
+          elementId: null,
+        })
+      );
+
+      expect(res.status).toBe(201);
+      const data = await res.json();
+      expect(data.context).toBeUndefined();
+      expect(data.elementId).toBeUndefined();
+    });
+
+    it('treats null userEmail as absent (anonymous flow), not a type error', async () => {
+      const h = createApiHandlers({ adapter }); // no getUserEmail configured
+
+      const res = await h.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Test',
+          pageUrl: '/page',
+          userEmail: null,
+        })
+      );
+
+      expect(res.status).toBe(201);
+      const data = await res.json();
+      expect(data.userEmail).toBe('anonymous');
+    });
+
+    it('still rejects null feedbackText and pageUrl', async () => {
+      const res1 = await handlers.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: null,
+          pageUrl: '/page',
+        })
+      );
+      expect(res1.status).toBe(400);
+
+      const res2 = await handlers.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Test',
+          pageUrl: null,
+        })
+      );
+      expect(res2.status).toBe(400);
+    });
+  });
+
   describe('PATCH race with deletion (TOCTOU)', () => {
     it('returns 404 (not 200 with null body) when update finds no row', async () => {
       // Simulate the row vanishing between request receipt and the update —
@@ -1386,6 +1561,92 @@ describe('createApiHandlers', () => {
       const data = await res.json();
       expect(data.updated).toHaveLength(1);
       expect(data.notFound).toEqual(['missing']);
+      expect(data.failed).toEqual([]);
+    });
+  });
+
+  describe('RESOLVE failed reporting (adapter bulkUpdate returning BulkUpdateResult)', () => {
+    // Adapters without transactions (supabase/PostgREST) report per-item
+    // errors via the rich BulkUpdateResult shape. The handler must surface
+    // those as `failed` (retry later), not `notFound` (row gone).
+    function adapterWithRichBulkUpdate(
+      base: FeedbackAdapter,
+      result: Awaited<ReturnType<NonNullable<FeedbackAdapter['bulkUpdate']>>>
+    ): FeedbackAdapter {
+      return { ...base, bulkUpdate: async () => result };
+    }
+
+    it('reports errored ids in failed, not notFound (partial success → 200)', async () => {
+      const fb = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'A' });
+      const updatedFb = { ...fb, status: 'Done' as const };
+      const h = createApiHandlers({
+        adapter: adapterWithRichBulkUpdate(adapter, {
+          updated: [updatedFb],
+          failed: [{ id: 'fb_broken', error: 'permission denied' }],
+        }),
+      });
+
+      const res = await h.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [
+            { id: fb.id, status: 'Done' },
+            { id: 'fb_broken', status: 'Done' },
+            { id: 'fb_gone', status: 'Done' },
+          ],
+        })
+      );
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.updated).toHaveLength(1);
+      expect(data.failed).toEqual(['fb_broken']);
+      expect(data.notFound).toEqual(['fb_gone']);
+    });
+
+    it('returns 500 when nothing was updated and at least one update errored', async () => {
+      // A db outage / expired credentials / RLS misconfiguration must not be
+      // reported as a 200 with every id in notFound — agents following the
+      // README would treat the items as deleted and drop them.
+      const h = createApiHandlers({
+        adapter: adapterWithRichBulkUpdate(adapter, {
+          updated: [],
+          failed: [
+            { id: 'fb_1', error: 'db down' },
+            { id: 'fb_2', error: 'db down' },
+          ],
+        }),
+      });
+
+      const res = await h.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [
+            { id: 'fb_1', status: 'Done' },
+            { id: 'fb_2', status: 'Done' },
+          ],
+        })
+      );
+
+      expect(res.status).toBe(500);
+      const data = await res.json();
+      expect(data).toEqual({ updated: [], notFound: [], failed: ['fb_1', 'fb_2'] });
+    });
+
+    it('still returns 200 when an all-notFound batch has no errors', async () => {
+      // Genuinely-missing rows with zero errors remain a success: the agent
+      // can safely drop those ids.
+      const h = createApiHandlers({
+        adapter: adapterWithRichBulkUpdate(adapter, { updated: [], failed: [] }),
+      });
+
+      const res = await h.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [{ id: 'gone', status: 'Done' }],
+        })
+      );
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data).toEqual({ updated: [], notFound: ['gone'], failed: [] });
     });
   });
 
@@ -1452,7 +1713,7 @@ describe('createApiHandlers', () => {
       expect(data.error).toBe('adminNotes must be a string');
     });
 
-    it('RESOLVE returns 400 for adminNotes over 5000 characters', async () => {
+    it('RESOLVE returns 400 for adminNotes over 5000 characters, identifying the item', async () => {
       const fb = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'Test' });
 
       const res = await handlers.RESOLVE(
@@ -1463,6 +1724,21 @@ describe('createApiHandlers', () => {
       expect(res.status).toBe(400);
       const data = await res.json();
       expect(data.error).toContain('5000 characters or less');
+      // Batch errors must say WHICH resolution failed, like the status/category errors.
+      expect(data.error).toContain(`for id "${fb.id}"`);
+    });
+
+    it('RESOLVE returns 400 for non-string adminNotes, identifying the item', async () => {
+      const fb = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'Test' });
+
+      const res = await handlers.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [{ id: fb.id, status: 'Done', adminNotes: 42 }],
+        })
+      );
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toBe(`adminNotes must be a string for id "${fb.id}"`);
     });
   });
 });
