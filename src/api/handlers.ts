@@ -1,8 +1,105 @@
-import { Feedback, FeedbackAdapter, FeedbackStatus, FeedbackUpdate, validateFeedbackInput } from '../lib/types';
+import { Feedback, FeedbackAdapter, FeedbackCategory, FeedbackInput, FeedbackStatus, FeedbackUpdate, VALID_CATEGORIES, VALID_STATUSES, validateFeedbackInput } from '../lib/types';
+import { toTriageItem } from '../lib/ai';
+
+const MAX_ADMIN_NOTES_LENGTH = 5000;
+
+function jsonResponse(body: unknown, status: number): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+/**
+ * Parse and validate a JSON request body for state-changing endpoints (POST/PATCH/RESOLVE).
+ *
+ * - Rejects non-JSON content types with 415. This doubles as CSRF protection when
+ *   `authorize` is cookie-based: a cross-site HTML form can only submit
+ *   text/plain, multipart or urlencoded bodies without triggering a CORS preflight,
+ *   so requiring `application/json` blocks form-based forgery.
+ * - Rejects malformed JSON and non-object bodies with 400 — these are client errors,
+ *   not server failures, so they must not surface as 500s.
+ */
+async function parseJsonBody(
+  request: Request
+): Promise<{ body: Record<string, unknown>; errorResponse?: undefined } | { body?: undefined; errorResponse: Response }> {
+  const contentType = request.headers.get('content-type') || '';
+  if (!contentType.toLowerCase().includes('application/json')) {
+    return { errorResponse: jsonResponse({ error: 'Content-Type must be application/json' }, 415) };
+  }
+
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return { errorResponse: jsonResponse({ error: 'Invalid JSON body' }, 400) };
+  }
+
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return { errorResponse: jsonResponse({ error: 'Request body must be a JSON object' }, 400) };
+  }
+
+  return { body: body as Record<string, unknown> };
+}
+
+/**
+ * Return a 400 Response when any of the named body fields is present but not a string
+ * (numbers, booleans, nulls, objects). Guards the `.trim()` calls downstream so a
+ * malformed body surfaces as a 400 validation error rather than a TypeError → 500.
+ */
+function validateStringFields(body: Record<string, unknown>, fields: string[]): Response | null {
+  for (const field of fields) {
+    const value = body[field];
+    if (value !== undefined && typeof value !== 'string') {
+      return jsonResponse({ error: `${field} must be a string` }, 400);
+    }
+  }
+  return null;
+}
+
+/**
+ * Parse and validate the optional `status` query param (GET/COUNT). Returns a 400
+ * Response for unknown values instead of silently returning an empty result set.
+ */
+function parseStatusParam(
+  url: URL
+): { status: FeedbackStatus | undefined; errorResponse?: undefined } | { status?: undefined; errorResponse: Response } {
+  const raw = url.searchParams.get('status');
+  if (raw === null) return { status: undefined };
+  if (!VALID_STATUSES.includes(raw as FeedbackStatus)) {
+    return {
+      errorResponse: jsonResponse(
+        { error: `Invalid status value. Must be one of: ${VALID_STATUSES.join(', ')}` },
+        400
+      ),
+    };
+  }
+  return { status: raw as FeedbackStatus };
+}
+
+/** Validate an optional `adminNotes` field. Returns a 400 Response on failure, null when ok. */
+function validateAdminNotes(adminNotes: unknown): Response | null {
+  if (adminNotes !== undefined && typeof adminNotes !== 'string') {
+    return jsonResponse({ error: 'adminNotes must be a string' }, 400);
+  }
+  if (typeof adminNotes === 'string' && adminNotes.length > MAX_ADMIN_NOTES_LENGTH) {
+    return jsonResponse(
+      { error: `Admin notes must be ${MAX_ADMIN_NOTES_LENGTH} characters or less` },
+      400
+    );
+  }
+  return null;
+}
 
 export interface ApiConfig {
   adapter: FeedbackAdapter;
-  /** Function to get current user email from request */
+  /** Function to get current user email from request. This is the TRUSTED identity
+   *  source: with the default `trustClientEmail: false` its result overrides any
+   *  client-supplied body email, so it MUST return a verified identity (e.g. from a
+   *  server-side session via Supabase `auth.getUser()` or NextAuth `getServerSession`).
+   *  Never derive it from a request header the client can set (like `x-user-email`) —
+   *  that would let any caller forge attribution. Return null when there is no
+   *  authenticated user. */
   getUserEmail?: (request: Request) => Promise<string | null>;
   /** Optional authorization callback. When provided it gates every read/admin endpoint
    *  (GET, COUNT, PATCH, TRIAGE, RESOLVE) — GET/COUNT can leak feedback (incl. emails) to
@@ -59,9 +156,10 @@ export function createApiHandlers(config: ApiConfig) {
         if (authResponse) return authResponse;
 
         const url = new URL(request.url);
-        const status = url.searchParams.get('status') as FeedbackStatus | null;
+        const statusParam = parseStatusParam(url);
+        if (statusParam.errorResponse) return statusParam.errorResponse;
 
-        const feedback = await adapter.getAll(status || undefined);
+        const feedback = await adapter.getAll(statusParam.status);
 
         return new Response(JSON.stringify(feedback), {
           status: 200,
@@ -82,8 +180,16 @@ export function createApiHandlers(config: ApiConfig) {
      */
     async POST(request: Request): Promise<Response> {
       try {
-        const body = await request.json();
-        const { feedbackText, pageUrl, context, elementId, category, userEmail: bodyEmail } = body;
+        const parsed = await parseJsonBody(request);
+        if (parsed.errorResponse) return parsed.errorResponse;
+
+        const stringFieldError = validateStringFields(parsed.body, [
+          'feedbackText', 'pageUrl', 'context', 'elementId', 'userEmail',
+        ]);
+        if (stringFieldError) return stringFieldError;
+
+        const { feedbackText, pageUrl, context, elementId, category, userEmail: bodyEmail } =
+          parsed.body as Partial<FeedbackInput>;
 
         // Resolve the submitter's email. A client-supplied body email is spoofable, so by
         // default the server-derived email (getUserEmail) takes precedence. Only when
@@ -93,10 +199,16 @@ export function createApiHandlers(config: ApiConfig) {
           ? (bodyEmail?.trim() || serverEmail || 'anonymous')
           : (serverEmail || bodyEmail?.trim() || 'anonymous');
 
+        // Full (non-partial) validation: missing/empty feedbackText and pageUrl
+        // are rejected here, so no duplicated required-field checks are needed.
         const validationErrors = validateFeedbackInput({
           feedbackText,
           pageUrl,
-          userEmail,
+          context,
+          elementId,
+          // 'anonymous' is the sentinel for submissions with no email source —
+          // skip the email-format check for it so anonymous feedback is accepted.
+          ...(userEmail === 'anonymous' ? {} : { userEmail }),
           category,
         });
 
@@ -107,24 +219,12 @@ export function createApiHandlers(config: ApiConfig) {
           );
         }
 
-        if (!feedbackText || !feedbackText.trim()) {
-          return new Response(
-            JSON.stringify({ error: 'Feedback text is required' }),
-            { status: 400, headers: { 'Content-Type': 'application/json' } }
-          );
-        }
-
-        if (!pageUrl) {
-          return new Response(
-            JSON.stringify({ error: 'Page URL is required' }),
-            { status: 400, headers: { 'Content-Type': 'application/json' } }
-          );
-        }
-
         const feedback = await adapter.add({
           userEmail: userEmail.trim(),
-          pageUrl: pageUrl.trim(),
-          feedbackText: feedbackText.trim(),
+          // Validation guarantees both are present non-empty strings; the ?? ''
+          // only narrows the Partial<> types for the compiler.
+          pageUrl: (pageUrl ?? '').trim(),
+          feedbackText: (feedbackText ?? '').trim(),
           context: context?.trim() || undefined,
           elementId: elementId?.trim() || undefined,
           category: category || undefined,
@@ -156,8 +256,13 @@ export function createApiHandlers(config: ApiConfig) {
         const authResponse = await checkAuth(request);
         if (authResponse) return authResponse;
 
-        const body = await request.json();
-        const { status, adminNotes, category } = body;
+        const parsed = await parseJsonBody(request);
+        if (parsed.errorResponse) return parsed.errorResponse;
+        const { status, adminNotes, category } = parsed.body as {
+          status?: FeedbackStatus;
+          adminNotes?: string;
+          category?: FeedbackCategory;
+        };
 
         if (status === undefined && adminNotes === undefined && category === undefined) {
           return new Response(
@@ -166,27 +271,38 @@ export function createApiHandlers(config: ApiConfig) {
           );
         }
 
-        const validStatuses: FeedbackStatus[] = ['Pending', 'In Review', 'Done', 'Rejected'];
-        if (status && !validStatuses.includes(status)) {
+        if (status !== undefined && !VALID_STATUSES.includes(status)) {
           return new Response(
             JSON.stringify({ error: 'Invalid status value' }),
             { status: 400, headers: { 'Content-Type': 'application/json' } }
           );
         }
 
-        const existing = await adapter.getById(id);
-        if (!existing) {
+        if (category !== undefined && !VALID_CATEGORIES.includes(category)) {
           return new Response(
-            JSON.stringify({ error: 'Feedback not found' }),
-            { status: 404, headers: { 'Content-Type': 'application/json' } }
+            JSON.stringify({ error: `Invalid category. Must be one of: ${VALID_CATEGORIES.join(', ')}` }),
+            { status: 400, headers: { 'Content-Type': 'application/json' } }
           );
         }
 
+        const adminNotesError = validateAdminNotes(adminNotes);
+        if (adminNotesError) return adminNotesError;
+
+        // No getById pre-check: the update result is the 404 signal. A pre-check is
+        // racy (the row can vanish between the two calls, returning 200 with body
+        // `null`) and costs an extra round-trip.
         const updated = await adapter.update(id, {
           status,
           adminNotes: adminNotes?.trim(),
           category,
         });
+
+        if (!updated) {
+          return new Response(
+            JSON.stringify({ error: 'Feedback not found' }),
+            { status: 404, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
 
         return new Response(JSON.stringify(updated), {
           status: 200,
@@ -211,11 +327,12 @@ export function createApiHandlers(config: ApiConfig) {
         if (authResponse) return authResponse;
 
         const url = new URL(request.url);
-        const status = url.searchParams.get('status') as FeedbackStatus | null;
+        const statusParam = parseStatusParam(url);
+        if (statusParam.errorResponse) return statusParam.errorResponse;
 
         const count = adapter.getCount
-          ? await adapter.getCount(status || undefined)
-          : (await adapter.getAll(status || undefined)).length;
+          ? await adapter.getCount(statusParam.status)
+          : (await adapter.getAll(statusParam.status)).length;
 
         return new Response(JSON.stringify({ count }), {
           status: 200,
@@ -243,26 +360,7 @@ export function createApiHandlers(config: ApiConfig) {
         const inReview = await adapter.getAll('In Review');
         const allItems = [...pending, ...inReview];
 
-        const items = allItems.map((item) => {
-          let page = item.pageUrl;
-          try {
-            page = new URL(item.pageUrl).pathname;
-          } catch {
-            // Keep original if not a valid URL
-          }
-
-          return {
-            id: item.id,
-            feedback: item.feedbackText,
-            page,
-            section: item.context || 'General',
-            elementId: item.elementId || null,
-            category: item.category || null,
-            from: item.userEmail,
-            status: item.status,
-            submittedAt: item.createdAt,
-          };
-        });
+        const items = allItems.map(toTriageItem);
 
         return new Response(JSON.stringify({
           items,
@@ -286,15 +384,21 @@ export function createApiHandlers(config: ApiConfig) {
 
     /**
      * POST /api/feedback/resolve
-     * Bulk-update feedback items with status + admin notes
+     * Bulk-update feedback items with status + admin notes.
+     *
+     * Responds 200 with `{ updated: Feedback[], notFound: string[] }` — `notFound`
+     * lists requested ids that were not updated (no longer exist, filtered by
+     * row-level security, or whose individual update failed), so an agent can
+     * detect partial failure without diffing arrays.
      */
     async RESOLVE(request: Request): Promise<Response> {
       try {
         const authResponse = await checkAuth(request);
         if (authResponse) return authResponse;
 
-        const body = await request.json();
-        const { resolutions } = body;
+        const parsed = await parseJsonBody(request);
+        if (parsed.errorResponse) return parsed.errorResponse;
+        const { resolutions } = parsed.body;
 
         if (!Array.isArray(resolutions) || resolutions.length === 0) {
           return new Response(
@@ -303,8 +407,6 @@ export function createApiHandlers(config: ApiConfig) {
           );
         }
 
-        const validStatuses: FeedbackStatus[] = ['Pending', 'In Review', 'Done', 'Rejected'];
-
         for (const resolution of resolutions) {
           if (!resolution.id || typeof resolution.id !== 'string') {
             return new Response(
@@ -312,12 +414,20 @@ export function createApiHandlers(config: ApiConfig) {
               { status: 400, headers: { 'Content-Type': 'application/json' } }
             );
           }
-          if (resolution.status && !validStatuses.includes(resolution.status)) {
+          if (resolution.status !== undefined && !VALID_STATUSES.includes(resolution.status)) {
             return new Response(
               JSON.stringify({ error: `Invalid status "${resolution.status}" for id "${resolution.id}"` }),
               { status: 400, headers: { 'Content-Type': 'application/json' } }
             );
           }
+          if (resolution.category !== undefined && !VALID_CATEGORIES.includes(resolution.category)) {
+            return new Response(
+              JSON.stringify({ error: `Invalid category "${resolution.category}" for id "${resolution.id}"` }),
+              { status: 400, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+          const adminNotesError = validateAdminNotes(resolution.adminNotes);
+          if (adminNotesError) return adminNotesError;
         }
 
         const updates: Array<{ id: string } & FeedbackUpdate> = resolutions.map(
@@ -335,8 +445,16 @@ export function createApiHandlers(config: ApiConfig) {
         } else {
           results = [];
           for (const { id, ...update } of updates) {
-            const updated = await adapter.update(id, update);
-            if (updated) results.push(updated);
+            // Per-item failures must not abort the loop: earlier updates are
+            // already committed, so a blanket 500 would misreport them as not
+            // having happened. Failed ids surface in `notFound` alongside
+            // missing ones, so the caller can re-check/retry them.
+            try {
+              const updated = await adapter.update(id, update);
+              if (updated) results.push(updated);
+            } catch (error) {
+              console.error(`Error resolving feedback "${id}":`, error);
+            }
           }
         }
 
@@ -350,7 +468,13 @@ export function createApiHandlers(config: ApiConfig) {
           }
         }
 
-        return new Response(JSON.stringify({ updated: results }), {
+        // Report ids that weren't updated (deleted, never existed, filtered by
+        // RLS, or whose individual update failed) so callers — especially
+        // AI-agent loops — can detect partial failure and retry those ids.
+        const updatedIds = new Set(results.map(r => r.id));
+        const notFound = updates.map(u => u.id).filter(uId => !updatedIds.has(uId));
+
+        return new Response(JSON.stringify({ updated: results, notFound }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });

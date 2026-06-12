@@ -1,11 +1,4 @@
-import { Feedback, FeedbackAdapter, FeedbackInput, FeedbackStatus, FeedbackUpdate } from '../types';
-
-/** Compute resolvedAt based on status transition */
-function computeResolvedAt(status: FeedbackStatus | undefined): string | null | undefined {
-  if (status === 'Done' || status === 'Rejected') return new Date().toISOString();
-  if (status === 'Pending' || status === 'In Review') return null;
-  return undefined; // no status change
-}
+import { computeResolvedAt, Feedback, FeedbackAdapter, FeedbackInput, FeedbackStatus, FeedbackUpdate } from '../types';
 
 /**
  * In-memory adapter for development and testing
@@ -21,7 +14,7 @@ export function createMemoryAdapter(): FeedbackAdapter {
   const storage: Map<string, Feedback> = new Map();
 
   function applyUpdate(existing: Feedback, updates: FeedbackUpdate): Feedback {
-    const resolvedAt = computeResolvedAt(updates.status);
+    const resolvedAt = computeResolvedAt(updates.status, existing.resolvedAt);
     return {
       ...existing,
       ...(updates.status !== undefined ? { status: updates.status } : {}),

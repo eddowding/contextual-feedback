@@ -147,6 +147,47 @@ describe('createMemoryAdapter', () => {
     expect(updated!.resolvedAt).toBeTruthy();
   });
 
+  it('preserves the original resolvedAt when a resolved status is re-applied', async () => {
+    const fb = await adapter.add({
+      userEmail: 'u@t.com',
+      pageUrl: '/p',
+      feedbackText: 'Test',
+    });
+
+    const resolved = await adapter.update(fb.id, { status: 'Done' });
+    const originalResolvedAt = resolved!.resolvedAt;
+    expect(originalResolvedAt).toBeTruthy();
+
+    await new Promise(r => setTimeout(r, 5));
+
+    // Retried/idempotent RESOLVE call (re-sends status while editing notes)
+    const retried = await adapter.update(fb.id, { status: 'Done', adminNotes: 'still fixed' });
+    expect(retried!.resolvedAt).toBe(originalResolvedAt);
+
+    await new Promise(r => setTimeout(r, 5));
+
+    // Switching between resolved states also keeps the original timestamp
+    const rejected = await adapter.update(fb.id, { status: 'Rejected' });
+    expect(rejected!.resolvedAt).toBe(originalResolvedAt);
+  });
+
+  it('sets a fresh resolvedAt after the item was reopened', async () => {
+    const fb = await adapter.add({
+      userEmail: 'u@t.com',
+      pageUrl: '/p',
+      feedbackText: 'Test',
+    });
+
+    const first = await adapter.update(fb.id, { status: 'Done' });
+    await adapter.update(fb.id, { status: 'Pending' });
+
+    await new Promise(r => setTimeout(r, 5));
+
+    const second = await adapter.update(fb.id, { status: 'Done' });
+    expect(second!.resolvedAt).toBeTruthy();
+    expect(second!.resolvedAt).not.toBe(first!.resolvedAt);
+  });
+
   it('clears resolvedAt when status goes back to Pending', async () => {
     const fb = await adapter.add({
       userEmail: 'u@t.com',

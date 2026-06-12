@@ -1,4 +1,5 @@
-import { Feedback, FeedbackAdapter, FeedbackInput, FeedbackStatus, FeedbackUpdate } from '../types';
+import { buildFeedbackSchemaSql } from '../schema';
+import { computeResolvedAt, Feedback, FeedbackAdapter, FeedbackInput, FeedbackStatus, FeedbackUpdate } from '../types';
 
 /**
  * Chainable query builder that models the Supabase PostgREST client.
@@ -14,6 +15,7 @@ interface SupabaseQueryBuilder {
   in(column: string, values: string[]): SupabaseQueryBuilder;
   order(column: string, options?: { ascending: boolean }): SupabaseQueryBuilder;
   single(): SupabaseQueryBuilder;
+  maybeSingle(): SupabaseQueryBuilder;
   then(resolve: (value: SupabaseQueryResult) => void, reject?: (reason: unknown) => void): void;
 }
 
@@ -51,11 +53,8 @@ function rowToFeedback(row: Record<string, unknown>): Feedback {
   };
 }
 
-/** Compute resolvedAt based on status transition */
-function computeResolvedAt(status: FeedbackStatus | undefined): string | null | undefined {
-  if (status === 'Done' || status === 'Rejected') return new Date().toISOString();
-  if (status === 'Pending' || status === 'In Review') return null;
-  return undefined; // no status change
+function isResolvedStatus(status: FeedbackStatus | undefined): boolean {
+  return status === 'Done' || status === 'Rejected';
 }
 
 /**
@@ -97,6 +96,35 @@ export function createSupabaseAdapter(config: SupabaseConfig): FeedbackAdapter {
     return updateData;
   }
 
+  /**
+   * When re-applying a resolved status (Done/Rejected), keep the original
+   * resolution timestamp so retried/idempotent RESOLVE calls — or a PATCH that
+   * re-sends status while editing adminNotes — don't corrupt
+   * resolution-latency history. PostgREST can't express COALESCE in an update,
+   * so fetch the current value first. Fetch errors (e.g. missing row) are
+   * deliberately ignored: the subsequent update returns no rows and the
+   * caller handles that as before.
+   */
+  async function preserveResolvedAt(
+    id: string,
+    updates: FeedbackUpdate,
+    updateData: Record<string, unknown>
+  ): Promise<void> {
+    if (!isResolvedStatus(updates.status)) return;
+
+    const { data, error } = await client
+      .from(tableName)
+      .select('resolved_at')
+      .eq('id', id)
+      .single();
+
+    if (error) return;
+    const existing = (data as Record<string, unknown> | null)?.resolved_at;
+    if (existing) {
+      updateData.resolved_at = existing;
+    }
+  }
+
   return {
     async getAll(status?: FeedbackStatus): Promise<Feedback[]> {
       let query = client.from(tableName).select('*');
@@ -113,7 +141,10 @@ export function createSupabaseAdapter(config: SupabaseConfig): FeedbackAdapter {
     },
 
     async getById(id: string): Promise<Feedback | null> {
-      const { data, error } = await client.from(tableName).select('*').eq('id', id).single();
+      // .maybeSingle(), not .single(): .single() reports an error (PGRST116)
+      // when zero rows match, which would make a missing id throw instead of
+      // resolving null as the FeedbackAdapter contract requires.
+      const { data, error } = await client.from(tableName).select('*').eq('id', id).maybeSingle();
 
       if (error) throw new Error(error.message);
       return data ? rowToFeedback(data as Record<string, unknown>) : null;
@@ -132,11 +163,20 @@ export function createSupabaseAdapter(config: SupabaseConfig): FeedbackAdapter {
 
       if (error) throw new Error(error.message);
       const rows = (data ?? []) as Record<string, unknown>[];
+      if (!rows[0]) {
+        // Common under RLS: anon INSERT granted but not SELECT, so the insert
+        // succeeds yet returns no representation. Surface an actionable error
+        // instead of a TypeError from rowToFeedback(undefined).
+        throw new Error(
+          "Insert succeeded but returned no row — check the table's RLS SELECT policy"
+        );
+      }
       return rowToFeedback(rows[0]);
     },
 
     async update(id: string, updates: FeedbackUpdate): Promise<Feedback | null> {
       const updateData = buildUpdateData(updates);
+      await preserveResolvedAt(id, updates, updateData);
 
       const { data, error } = await client.from(tableName).update(updateData).eq('id', id).select();
 
@@ -146,8 +186,14 @@ export function createSupabaseAdapter(config: SupabaseConfig): FeedbackAdapter {
     },
 
     async delete(id: string): Promise<boolean> {
-      const { error } = await client.from(tableName).delete().eq('id', id);
-      return !error;
+      // .select() makes PostgREST return the deleted rows, so the boolean
+      // honours the adapter contract (true only when a row existed and was
+      // deleted) — a bare delete reports no error for zero affected rows.
+      const { data, error } = await client.from(tableName).delete().eq('id', id).select();
+
+      if (error) return false;
+      const rows = (data ?? []) as Record<string, unknown>[];
+      return rows.length > 0;
     },
 
     async getCount(status?: FeedbackStatus): Promise<number> {
@@ -167,10 +213,19 @@ export function createSupabaseAdapter(config: SupabaseConfig): FeedbackAdapter {
 
       for (const { id, ...update } of updates) {
         const updateData = buildUpdateData(update);
+        await preserveResolvedAt(id, update, updateData);
 
         const { data, error } = await client.from(tableName).update(updateData).eq('id', id).select();
 
-        if (error) throw new Error(error.message);
+        // PostgREST has no multi-statement transactions, so earlier updates in
+        // this loop are already committed when a later one fails. Throwing here
+        // would persist partial updates and then report total failure — instead
+        // skip the item so it surfaces in the caller's not-updated diff (the
+        // RESOLVE endpoint's `notFound` list) and can be retried.
+        if (error) {
+          console.error(`bulkUpdate failed for id "${id}": ${error.message}`);
+          continue;
+        }
         const rows = (data ?? []) as Record<string, unknown>[];
         if (rows[0]) {
           results.push(rowToFeedback(rows[0]));
@@ -183,43 +238,10 @@ export function createSupabaseAdapter(config: SupabaseConfig): FeedbackAdapter {
 }
 
 /**
- * SQL schema for creating the feedback table in Supabase
+ * SQL schema for creating the feedback table in Supabase.
+ *
+ * @deprecated Use `SUPABASE_SETUP_SQL` from 'contextual-feedback/setup'
+ * instead — it is the same DDL (both are built from the shared base in
+ * lib/schema.ts). This alias will be removed before 1.0.
  */
-export const SUPABASE_SCHEMA = `
-CREATE TABLE IF NOT EXISTS feedback (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_email VARCHAR(255) NOT NULL,
-  page_url VARCHAR(2000) NOT NULL,
-  feedback_text TEXT NOT NULL,
-  status VARCHAR(50) NOT NULL DEFAULT 'Pending'
-    CHECK (status IN ('Pending', 'In Review', 'Done', 'Rejected')),
-  category VARCHAR(50)
-    CHECK (category IS NULL OR category IN ('bug', 'feature', 'praise', 'question', 'other')),
-  context VARCHAR(255),
-  element_id VARCHAR(255),
-  admin_notes TEXT,
-  resolved_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON feedback(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_feedback_status ON feedback(status);
-CREATE INDEX IF NOT EXISTS idx_feedback_user_email ON feedback(user_email);
-CREATE INDEX IF NOT EXISTS idx_feedback_category ON feedback(category);
-
--- Auto-update updated_at on row change
-CREATE OR REPLACE FUNCTION update_feedback_updated_at()
-RETURNS TRIGGER AS $$
-BEGIN
-  NEW.updated_at = NOW();
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS trg_feedback_updated_at ON feedback;
-CREATE TRIGGER trg_feedback_updated_at
-  BEFORE UPDATE ON feedback
-  FOR EACH ROW
-  EXECUTE FUNCTION update_feedback_updated_at();
-`;
+export const SUPABASE_SCHEMA = buildFeedbackSchemaSql('NOW()');

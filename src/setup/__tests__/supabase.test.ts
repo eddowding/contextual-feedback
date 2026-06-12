@@ -50,6 +50,13 @@ describe('SUPABASE_RLS_SQL', () => {
     expect(SUPABASE_RLS_SQL).toContain('FOR INSERT');
   });
 
+  it('insert policy binds user_email to the JWT identity (no forged attribution)', () => {
+    expect(SUPABASE_RLS_SQL).toContain(
+      "WITH CHECK (user_email = (SELECT auth.jwt() ->> 'email') OR (SELECT is_admin()))"
+    );
+    expect(SUPABASE_RLS_SQL).not.toContain('WITH CHECK (true)');
+  });
+
   it('creates select policy', () => {
     expect(SUPABASE_RLS_SQL).toContain('feedback_select_own');
     expect(SUPABASE_RLS_SQL).toContain('FOR SELECT');

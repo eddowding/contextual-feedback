@@ -1,3 +1,4 @@
+import { buildFeedbackSchemaSql } from '../schema';
 import { Feedback, FeedbackAdapter, FeedbackInput, FeedbackStatus, FeedbackUpdate } from '../types';
 
 const VALID_TABLE_NAME = /^[a-zA-Z_][a-zA-Z0-9_.]*$/;
@@ -8,10 +9,22 @@ function validateTableName(name: string): string {
   return name;
 }
 
+interface PostgresQueryable {
+  query: (text: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
+}
+
+interface PostgresPoolClient extends PostgresQueryable {
+  release: () => void;
+}
+
 interface PostgresConfig {
   /** pg Pool or Client instance */
-  pool: {
-    query: (text: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
+  pool: PostgresQueryable & {
+    /**
+     * Present on a pg Pool. Used by bulkUpdate to run all statements on a
+     * single checked-out connection so BEGIN/COMMIT form a real transaction.
+     */
+    connect?: () => Promise<PostgresPoolClient | void>;
   };
   /** Table name. Defaults to 'feedback' */
   tableName?: string;
@@ -32,13 +45,6 @@ function rowToFeedback(row: Record<string, unknown>): Feedback {
     category: (row.category as string as Feedback['category']) || undefined,
     resolvedAt: (row.resolved_at as string) || undefined,
   };
-}
-
-/** Compute resolvedAt based on status transition */
-function computeResolvedAt(status: FeedbackStatus | undefined): string | null | undefined {
-  if (status === 'Done' || status === 'Rejected') return new Date().toISOString();
-  if (status === 'Pending' || status === 'In Review') return null;
-  return undefined; // no status change
 }
 
 /**
@@ -67,10 +73,19 @@ export function createPostgresAdapter(config: PostgresConfig): FeedbackAdapter {
       values.push(updates.status);
       paramIndex++;
 
-      const resolvedAt = computeResolvedAt(updates.status);
-      if (resolvedAt !== undefined) {
+      if (updates.status === 'Done' || updates.status === 'Rejected') {
+        // SQL form of the shared resolvedAt convention (see computeResolvedAt
+        // in lib/types.ts and the FeedbackAdapter.update JSDoc): COALESCE
+        // preserves the original resolution timestamp when the item is already
+        // resolved — retried/idempotent RESOLVE calls must not corrupt
+        // resolution-latency history.
+        setClauses.push(`resolved_at = COALESCE(resolved_at, $${paramIndex})`);
+        values.push(now);
+        paramIndex++;
+      } else {
+        // Pending / In Review — clear any previous resolution
         setClauses.push(`resolved_at = $${paramIndex}`);
-        values.push(resolvedAt);
+        values.push(null);
         paramIndex++;
       }
     }
@@ -163,17 +178,16 @@ export function createPostgresAdapter(config: PostgresConfig): FeedbackAdapter {
     },
 
     async bulkUpdate(updates: Array<{ id: string } & FeedbackUpdate>): Promise<Feedback[]> {
-      const results: Feedback[] = [];
+      const runUpdates = async (executor: PostgresQueryable): Promise<Feedback[]> => {
+        const results: Feedback[] = [];
 
-      await pool.query('BEGIN');
-      try {
         for (const { id, ...update } of updates) {
           const now = new Date().toISOString();
           const { setClauses, values, paramIndex } = buildUpdateClauses(update, now);
 
           values.push(id);
 
-          const result = await pool.query(
+          const result = await executor.query(
             `UPDATE ${table} SET ${setClauses.join(', ')} WHERE id = $${paramIndex} RETURNING *`,
             values
           );
@@ -182,55 +196,65 @@ export function createPostgresAdapter(config: PostgresConfig): FeedbackAdapter {
             results.push(rowToFeedback(result.rows[0]));
           }
         }
+
+        return results;
+      };
+
+      // With a pg Pool, each pool.query() may run on a DIFFERENT connection, so
+      // BEGIN/COMMIT through the pool would not form a real transaction (and
+      // could leave a connection stuck 'idle in transaction'). Check out a
+      // single client and run everything on it. A pg Client also exposes
+      // connect() (resolving void / throwing when already connected), so we
+      // duck-type the resolved value before trusting it as a pool client.
+      let client: PostgresPoolClient | undefined;
+      if (typeof pool.connect === 'function') {
+        try {
+          const candidate = await pool.connect();
+          if (
+            candidate &&
+            typeof candidate.query === 'function' &&
+            typeof candidate.release === 'function'
+          ) {
+            client = candidate;
+          }
+        } catch {
+          // Not a Pool (e.g. an already-connected pg Client) — fall through.
+        }
+      }
+
+      if (client) {
+        try {
+          await client.query('BEGIN');
+          const results = await runUpdates(client);
+          await client.query('COMMIT');
+          return results;
+        } catch (error) {
+          await client.query('ROLLBACK');
+          throw error;
+        } finally {
+          client.release();
+        }
+      }
+
+      // Bare single-connection client: its query() always runs on the one
+      // connection, so an explicit transaction is safe and correct here.
+      await pool.query('BEGIN');
+      try {
+        const results = await runUpdates(pool);
         await pool.query('COMMIT');
+        return results;
       } catch (error) {
         await pool.query('ROLLBACK');
         throw error;
       }
-
-      return results;
     }
   };
 }
 
 /**
- * SQL schema for creating the feedback table
+ * SQL schema for creating the feedback table.
+ *
+ * Built from the shared base DDL in lib/schema.ts (one source of truth across
+ * POSTGRES_SCHEMA, SUPABASE_SCHEMA and SUPABASE_SETUP_SQL).
  */
-export const POSTGRES_SCHEMA = `
-CREATE TABLE IF NOT EXISTS feedback (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_email VARCHAR(255) NOT NULL,
-  page_url VARCHAR(2000) NOT NULL,
-  feedback_text TEXT NOT NULL,
-  status VARCHAR(50) NOT NULL DEFAULT 'Pending'
-    CHECK (status IN ('Pending', 'In Review', 'Done', 'Rejected')),
-  category VARCHAR(50)
-    CHECK (category IS NULL OR category IN ('bug', 'feature', 'praise', 'question', 'other')),
-  context VARCHAR(255),
-  element_id VARCHAR(255),
-  admin_notes TEXT,
-  resolved_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON feedback(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_feedback_status ON feedback(status);
-CREATE INDEX IF NOT EXISTS idx_feedback_user_email ON feedback(user_email);
-CREATE INDEX IF NOT EXISTS idx_feedback_category ON feedback(category);
-
--- Auto-update updated_at on row change
-CREATE OR REPLACE FUNCTION update_feedback_updated_at()
-RETURNS TRIGGER AS $$
-BEGIN
-  NEW.updated_at = CURRENT_TIMESTAMP;
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS trg_feedback_updated_at ON feedback;
-CREATE TRIGGER trg_feedback_updated_at
-  BEFORE UPDATE ON feedback
-  FOR EACH ROW
-  EXECUTE FUNCTION update_feedback_updated_at();
-`;
+export const POSTGRES_SCHEMA = buildFeedbackSchemaSql('CURRENT_TIMESTAMP');

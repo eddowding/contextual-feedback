@@ -1,6 +1,12 @@
-export type FeedbackStatus = 'Pending' | 'In Review' | 'Done' | 'Rejected';
+/** All valid feedback statuses, as a runtime list (single source of truth). */
+export const VALID_STATUSES = ['Pending', 'In Review', 'Done', 'Rejected'] as const;
 
-export type FeedbackCategory = 'bug' | 'feature' | 'praise' | 'question' | 'other';
+export type FeedbackStatus = (typeof VALID_STATUSES)[number];
+
+/** All valid feedback categories, as a runtime list (single source of truth). */
+export const VALID_CATEGORIES = ['bug', 'feature', 'praise', 'question', 'other'] as const;
+
+export type FeedbackCategory = (typeof VALID_CATEGORIES)[number];
 
 export interface Feedback {
   id: string;
@@ -46,16 +52,31 @@ export interface FeedbackAdapter {
   /** Add new feedback */
   add(input: FeedbackInput): Promise<Feedback>;
 
-  /** Update feedback */
+  /** Update feedback. Resolves the updated item, or null when no row matched.
+   *
+   *  resolvedAt convention (every adapter must implement this — use the
+   *  exported `computeResolvedAt` helper): a status change to Done/Rejected
+   *  sets `resolvedAt`, preserving an existing value so retried/idempotent
+   *  calls don't corrupt resolution-latency history; a change to
+   *  Pending/In Review clears it; no status change leaves it untouched. */
   update(id: string, updates: FeedbackUpdate): Promise<Feedback | null>;
 
-  /** Delete feedback */
+  /** Delete feedback. Resolves true only when a row existed and was deleted —
+   *  deleting a missing id resolves false. */
   delete?(id: string): Promise<boolean>;
 
   /** Get count by status */
   getCount?(status?: FeedbackStatus): Promise<number>;
 
-  /** Bulk update multiple feedback items at once */
+  /** Bulk update multiple feedback items at once. Applies the same resolvedAt
+   *  convention as update().
+   *
+   *  Contract: resolves with the successfully updated items; ids that were
+   *  missing or whose update failed are omitted so callers can diff.
+   *  Implementations must either be atomic (all-or-nothing — a thrown error
+   *  means nothing was persisted, e.g. the postgres adapter's transaction) or
+   *  continue past per-item failures and omit them from the result. Never
+   *  persist partial updates and then throw. */
   bulkUpdate?(updates: Array<{ id: string } & FeedbackUpdate>): Promise<Feedback[]>;
 }
 
@@ -64,16 +85,69 @@ export interface ValidationError {
   message: string;
 }
 
-const VALID_CATEGORIES: FeedbackCategory[] = ['bug', 'feature', 'praise', 'question', 'other'];
+/**
+ * Compute the `resolvedAt` value for a status transition. This is the
+ * lifecycle convention every adapter must implement (see
+ * FeedbackAdapter.update): a transition to Done/Rejected sets `resolvedAt`,
+ * keeping an existing timestamp so retried/idempotent RESOLVE calls (or a
+ * PATCH that re-sends status while editing other fields) don't corrupt
+ * resolution-latency history; a transition to Pending/In Review clears it.
+ *
+ * Returns the new ISO timestamp (or the preserved existing one), `null` to
+ * clear the field, or `undefined` when the status did not change and
+ * `resolvedAt` must be left untouched.
+ */
+export function computeResolvedAt(
+  status: FeedbackStatus | undefined,
+  existingResolvedAt?: string
+): string | null | undefined {
+  if (status === 'Done' || status === 'Rejected') {
+    return existingResolvedAt ?? new Date().toISOString();
+  }
+  if (status === 'Pending' || status === 'In Review') return null;
+  return undefined; // no status change
+}
+
+/**
+ * A page URL is safe when it is an absolute http(s) URL or a relative path.
+ * Anything carrying another scheme (javascript:, data:, vbscript:, …) is
+ * rejected — those are script vectors when later rendered as an anchor href.
+ */
+function isSafePageUrl(url: string): boolean {
+  let parsed: URL | null = null;
+  try {
+    parsed = new URL(url);
+  } catch {
+    // Not an absolute URL — allow relative paths only.
+    return url.startsWith('/');
+  }
+  return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+}
 
 /**
  * Validate feedback input fields.
+ *
+ * By default this validates a FULL submission: missing `feedbackText` or
+ * `pageUrl` are reported as errors. Pass `{ partial: true }` to validate a
+ * partial payload (e.g. a field-by-field update), where only the fields that
+ * are present get checked and required-ness is skipped.
+ *
  * Returns an array of validation errors (empty if valid).
  */
-export function validateFeedbackInput(input: Partial<FeedbackInput>): ValidationError[] {
+export function validateFeedbackInput(
+  input: Partial<FeedbackInput>,
+  options: { partial?: boolean } = {}
+): ValidationError[] {
   const errors: ValidationError[] = [];
+  const { partial = false } = options;
 
-  if (input.feedbackText !== undefined) {
+  if (input.feedbackText === undefined) {
+    if (!partial) {
+      errors.push({ field: 'feedbackText', message: 'Feedback text is required' });
+    }
+  } else if (typeof input.feedbackText !== 'string') {
+    errors.push({ field: 'feedbackText', message: 'Feedback text must be a string' });
+  } else {
     const trimmed = input.feedbackText.trim();
     if (!trimmed) {
       errors.push({ field: 'feedbackText', message: 'Feedback text is required' });
@@ -82,19 +156,55 @@ export function validateFeedbackInput(input: Partial<FeedbackInput>): Validation
     }
   }
 
-  if (input.pageUrl !== undefined) {
+  if (input.pageUrl === undefined) {
+    if (!partial) {
+      errors.push({ field: 'pageUrl', message: 'Page URL is required' });
+    }
+  } else if (typeof input.pageUrl !== 'string') {
+    errors.push({ field: 'pageUrl', message: 'Page URL must be a string' });
+  } else {
     const trimmed = input.pageUrl.trim();
     if (!trimmed) {
       errors.push({ field: 'pageUrl', message: 'Page URL is required' });
     } else if (trimmed.length > 2000) {
       errors.push({ field: 'pageUrl', message: 'Page URL must be 2000 characters or less' });
+    } else if (!isSafePageUrl(trimmed)) {
+      // Reject dangerous schemes (javascript:, data:, …) at the door so a
+      // stored value can never execute when rendered as a link in an admin UI.
+      errors.push({
+        field: 'pageUrl',
+        message: 'Page URL must be an http(s) URL or a relative path',
+      });
     }
   }
 
   if (input.userEmail !== undefined) {
-    const trimmed = input.userEmail.trim();
-    if (trimmed && !trimmed.includes('@')) {
-      errors.push({ field: 'userEmail', message: 'Invalid email format' });
+    if (typeof input.userEmail !== 'string') {
+      errors.push({ field: 'userEmail', message: 'Email must be a string' });
+    } else {
+      const trimmed = input.userEmail.trim();
+      if (trimmed && !trimmed.includes('@')) {
+        errors.push({ field: 'userEmail', message: 'Invalid email format' });
+      }
+    }
+  }
+
+  // context and element_id are VARCHAR(255) in the SQL schemas — reject
+  // oversized values here as a 400 instead of letting the database error
+  // surface as a 500 (and cap memory-adapter storage the same way).
+  if (input.context !== undefined) {
+    if (typeof input.context !== 'string') {
+      errors.push({ field: 'context', message: 'Context must be a string' });
+    } else if (input.context.trim().length > 255) {
+      errors.push({ field: 'context', message: 'Context must be 255 characters or less' });
+    }
+  }
+
+  if (input.elementId !== undefined) {
+    if (typeof input.elementId !== 'string') {
+      errors.push({ field: 'elementId', message: 'Element ID must be a string' });
+    } else if (input.elementId.trim().length > 255) {
+      errors.push({ field: 'elementId', message: 'Element ID must be 255 characters or less' });
     }
   }
 

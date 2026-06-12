@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useEffect, useMemo } from 'react';
-import { Feedback, FeedbackStatus } from '../lib/types';
+import { Feedback, FeedbackStatus, VALID_STATUSES } from '../lib/types';
+import { toTriageItem } from '../lib/ai';
 
 export type ExportFormat = 'default' | 'ai-triage';
 
@@ -55,38 +56,59 @@ export function FeedbackList({
   const [copiedAll, setCopiedAll] = useState(false);
   const [currentPage, setCurrentPage] = useState(0);
 
-  const totalPages = Math.max(1, Math.ceil(feedback.length / pageSize));
-  const paginatedFeedback = useMemo(
-    () => feedback.slice(currentPage * pageSize, (currentPage + 1) * pageSize),
-    [feedback, currentPage, pageSize]
+  // Client-side filtering is the source of truth so statusFilter also works
+  // with initialFeedback / fetchOnMount={false}, and items whose status is
+  // changed inline drop out of a filtered view. The `?status=` query param is
+  // kept as a server-side optimisation.
+  const visibleFeedback = useMemo(
+    () => (statusFilter ? feedback.filter((f) => f.status === statusFilter) : feedback),
+    [feedback, statusFilter]
   );
 
-  // Reset to first page when feedback data changes
+  const totalPages = Math.max(1, Math.ceil(visibleFeedback.length / pageSize));
+  const paginatedFeedback = useMemo(
+    () => visibleFeedback.slice(currentPage * pageSize, (currentPage + 1) * pageSize),
+    [visibleFeedback, currentPage, pageSize]
+  );
+
+  // Reset to first page when the visible data changes
   useEffect(() => {
     setCurrentPage(0);
-  }, [feedback.length]);
+  }, [visibleFeedback.length]);
 
   // Fetch feedback on mount if needed
   useEffect(() => {
     if (initialFeedback || fetchOnMount === false) return;
+
+    // Abort in-flight requests on dependency change/unmount so a slow earlier
+    // response can't overwrite a later one (or set state after unmount).
+    const controller = new AbortController();
+    setLoading(true);
+    setError(null);
 
     const fetchFeedback = async () => {
       try {
         const url = statusFilter
           ? `${apiEndpoint}?status=${encodeURIComponent(statusFilter)}`
           : apiEndpoint;
-        const response = await fetch(url);
+        const response = await fetch(url, { signal: controller.signal });
         if (!response.ok) throw new Error('Failed to fetch feedback');
         const data = await response.json();
+        // A dependency change or unmount aborted this request while it was in
+        // flight — never let the stale response overwrite newer state.
+        if (controller.signal.aborted) return;
         setFeedback(Array.isArray(data) ? data : []);
+        setLoading(false);
       } catch (err) {
+        if (controller.signal.aborted) return;
         setError(err instanceof Error ? err.message : 'Failed to load feedback');
-      } finally {
         setLoading(false);
       }
     };
 
     fetchFeedback();
+
+    return () => controller.abort();
   }, [apiEndpoint, statusFilter, initialFeedback, fetchOnMount]);
 
   const formatDate = (dateString: string) => {
@@ -101,24 +123,16 @@ export function FeedbackList({
   };
 
   const formatFeedbackForExport = (item: Feedback) => {
+    if (exportFormat === 'ai-triage') {
+      // Shared with the TRIAGE endpoint so both 'ai-triage' sources match.
+      return toTriageItem(item);
+    }
+
     let pathname = item.pageUrl;
     try {
       pathname = new URL(item.pageUrl).pathname;
     } catch {
       // Keep original if not a valid URL
-    }
-
-    if (exportFormat === 'ai-triage') {
-      return {
-        id: item.id,
-        feedback: item.feedbackText,
-        page: pathname,
-        section: item.context || 'General',
-        elementId: item.elementId || null,
-        from: item.userEmail,
-        status: item.status,
-        submittedAt: item.createdAt,
-      };
     }
 
     return {
@@ -157,12 +171,12 @@ export function FeedbackList({
   };
 
   const copyAll = () => {
-    const json = JSON.stringify(feedback.map(formatFeedbackForExport), null, 2);
+    const json = JSON.stringify(visibleFeedback.map(formatFeedbackForExport), null, 2);
     copyToClipboard(json);
   };
 
   const downloadJson = () => {
-    const json = JSON.stringify(feedback.map(formatFeedbackForExport), null, 2);
+    const json = JSON.stringify(visibleFeedback.map(formatFeedbackForExport), null, 2);
     const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -208,6 +222,17 @@ export function FeedbackList({
     }
   };
 
+  // Only http(s) URLs may be rendered as a link — a stored javascript: URL
+  // would otherwise execute in the admin's session when clicked (stored XSS).
+  const isSafeHref = (url: string) => {
+    try {
+      const { protocol } = new URL(url);
+      return protocol === 'http:' || protocol === 'https:';
+    } catch {
+      return false;
+    }
+  };
+
   if (loading) {
     return (
       <div className={`cf-list-container cf-list-loading ${className || ''}`}>
@@ -225,7 +250,7 @@ export function FeedbackList({
     );
   }
 
-  if (feedback.length === 0) {
+  if (visibleFeedback.length === 0) {
     return (
       <div className={`cf-list-container cf-list-empty ${className || ''}`}>
         <span>No feedback yet.</span>
@@ -235,10 +260,15 @@ export function FeedbackList({
 
   return (
     <div className={`cf-list-container ${className || ''}`}>
+      {/* Announce copy success to screen readers */}
+      <span className="cf-sr-only" role="status">
+        {copiedAll || copiedId ? 'Copied to clipboard' : ''}
+      </span>
+
       {/* Header */}
       <div className="cf-list-header">
         <span className="cf-list-count">
-          {feedback.length} item{feedback.length !== 1 ? 's' : ''}
+          {visibleFeedback.length} item{visibleFeedback.length !== 1 ? 's' : ''}
         </span>
         {showCopyButtons && (
           <div className="cf-list-header-actions">
@@ -293,6 +323,7 @@ export function FeedbackList({
               showCopyButton={showCopyButtons}
               formatDate={formatDate}
               getPathname={getPathname}
+              isSafeHref={isSafeHref}
             />
           ))}
         </tbody>
@@ -340,6 +371,7 @@ interface FeedbackRowProps {
   showCopyButton: boolean;
   formatDate: (date: string) => string;
   getPathname: (url: string) => string;
+  isSafeHref: (url: string) => boolean;
 }
 
 function FeedbackRow({
@@ -352,41 +384,59 @@ function FeedbackRow({
   showCopyButton,
   formatDate,
   getPathname,
+  isSafeHref,
 }: FeedbackRowProps) {
-  const statuses: FeedbackStatus[] = ['Pending', 'In Review', 'Done', 'Rejected'];
+  const statuses: readonly FeedbackStatus[] = VALID_STATUSES;
 
   return (
     <>
       <tr onClick={onToggle} className={`cf-list-row ${expanded ? 'cf-list-row-expanded' : ''}`}>
         <td className="cf-list-td-expand">
-          <svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            className={`cf-list-chevron ${expanded ? 'cf-list-chevron-open' : ''}`}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggle();
+            }}
+            aria-expanded={expanded}
+            aria-label={`Show feedback from ${item.userEmail}`}
+            className="cf-list-expand-btn"
           >
-            <polyline points="9 18 15 12 9 6" />
-          </svg>
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              className={`cf-list-chevron ${expanded ? 'cf-list-chevron-open' : ''}`}
+            >
+              <polyline points="9 18 15 12 9 6" />
+            </svg>
+          </button>
         </td>
         <td className="cf-list-td-user">{item.userEmail.split('@')[0]}</td>
         <td className="cf-list-td-page">
-          <a
-            href={item.pageUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={(e) => e.stopPropagation()}
-            className="cf-list-page-link"
-          >
-            {getPathname(item.pageUrl)}
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-              <polyline points="15 3 21 3 21 9" />
-              <line x1="10" y1="14" x2="21" y2="3" />
-            </svg>
-          </a>
+          {isSafeHref(item.pageUrl) ? (
+            <a
+              href={item.pageUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="cf-list-page-link"
+            >
+              {getPathname(item.pageUrl)}
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                <polyline points="15 3 21 3 21 9" />
+                <line x1="10" y1="14" x2="21" y2="3" />
+              </svg>
+            </a>
+          ) : (
+            // Non-http(s) URLs (javascript:, data:, relative paths) are shown
+            // as plain text — never as a clickable href.
+            <span className="cf-list-page-link">{getPathname(item.pageUrl)}</span>
+          )}
         </td>
         <td className="cf-list-td-context">
           {item.context ? (
@@ -400,6 +450,7 @@ function FeedbackRow({
           <select
             value={item.status}
             onChange={(e) => onStatusChange(item.id, e.target.value as FeedbackStatus)}
+            aria-label={`Status for feedback from ${item.userEmail}`}
             className={`cf-list-status-select ${STATUS_COLORS[item.status]}`}
           >
             {statuses.map((status) => (
