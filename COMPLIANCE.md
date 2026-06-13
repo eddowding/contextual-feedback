@@ -91,7 +91,7 @@ automated decision-making.
 | **Secure configuration (ISO 27002 §8.9)** | `trustClientEmail` defaults to `false` (server identity wins); `collectEmail` defaults to `'never'`; inline code documentation warns against deriving `getUserEmail` from spoofable request headers; README warns against granting AI agents unattended destructive capabilities | Follow the README guidance; do not enable `trustClientEmail: true` in public deployments; protect `SUPABASE_URL`, `SUPABASE_KEY`, and `DATABASE_URL` environment variables |
 | **Logging and monitoring (ISO 27002 §8.15)** | Server-side errors logged via `console.error` at the point of failure (fetch errors, update failures, bulkUpdate per-item errors); fire-and-forget hooks (`onSubmit`, `onResolve`) log their own errors without affecting the HTTP response | Route application logs to a centralised log management system; do not log feedback text or submitter emails to console in production |
 | **Cryptography / TLS (ISO 27002 §8.24)** | Not in scope for a server library | Enforce TLS on the API route; use HTTPS-only cookies for session state |
-| **Vulnerability disclosure (ISO/IEC 29147 / 30111)** | No `SECURITY.md` exists in the current repository — see Known Gaps | — |
+| **Vulnerability disclosure (ISO/IEC 29147 / 30111)** | `SECURITY.md` defines a coordinated disclosure policy routed through GitHub Private Vulnerability Reporting (enabled on the repository), with a safe-harbour statement and a 90-day public-disclosure backstop | Monitor the repository's draft security advisories; triage and patch confirmed reports on a best-effort basis |
 
 ---
 
@@ -160,7 +160,6 @@ responsibilities in the interim.
 
 | Gap | Impact | Interim operator action |
 |-----|--------|------------------------|
-| No `SECURITY.md` / vulnerability disclosure process (ISO/IEC 29147 / 30111) | Security researchers have no clear reporting path | Open a GitHub issue or email the maintainer; a `SECURITY.md` is planned for the next release |
 | No bulk-delete-by-email method on adapters | Erasure requests (Art 17) require custom query | Operators must query `SELECT id FROM feedback WHERE user_email = $1` and call `adapter.delete(id)` in a loop; a `deleteByEmail(email)` adapter method is under consideration |
 | No data-portability endpoint | Art 20 portability requires a structured export | Implement a custom operator endpoint filtering `adapter.getAll()` by email and serialising to JSON or CSV |
 | No retention / expiry mechanism | Storage limitation (Art 5(1)(e)) not enforced | Implement a scheduled job calling `adapter.delete()` for records beyond the retention window; the `createdAt` and `resolvedAt` timestamps are available for this purpose |

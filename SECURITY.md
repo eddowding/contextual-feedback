@@ -21,21 +21,19 @@ be resolved.
 **Do not open a public GitHub issue for security vulnerabilities.** Public disclosure
 before a fix is available puts every deployment at risk.
 
-### Preferred channel
+### Channel
 
-Use **GitHub Security Advisories** (coordinated, private disclosure):
+Report through **GitHub Private Vulnerability Reporting** — the private, coordinated
+disclosure channel built into this repository:
 
 1. Go to <https://github.com/eddowding/contextual-feedback/security/advisories>
 2. Click **"Report a vulnerability"**
 3. Fill in the form described below
 
-If you cannot use that interface, contact the maintainer through the address listed on the
-[npm package page](https://www.npmjs.com/package/contextual-feedback) or the GitHub profile
-for [@eddowding](https://github.com/eddowding).
-
-> **Placeholder:** a dedicated security contact address (e.g. `security@…`) has not yet been
-> configured. Until it is, the GitHub Security Advisory route above is the correct channel.
-> [security contact — fill in before publishing]
+This routes your report to the maintainers as a private draft advisory. There is no public
+issue, no email address to find, and no third party involved. It is the only supported
+reporting channel — please do not use public issues, discussions, or social media for
+undisclosed vulnerabilities.
 
 ### What to include in your report
 
@@ -56,18 +54,21 @@ The more detail you supply, the faster we can respond.
 
 ---
 
-## Response Targets
+## Response Expectations
 
-These are targets, not guarantees. A solo-maintained open-source library cannot match
-enterprise SLA commitments, but we take security reports seriously and will communicate
-actively.
+This is a free, open-source library maintained on a best-effort, volunteer basis. There is
+**no service-level agreement and no guaranteed response time.** Reports are read and acted
+on as maintainer time allows. We take security seriously and will respond when we can, but
+nothing in this document creates an obligation, contractual or otherwise, to respond within
+any particular period.
 
-| Stage | Target |
-|-------|--------|
-| **Acknowledgement** | Within **2 business days** of receiving the report |
-| **Initial triage** (reproduce / assess severity) | Within **5 business days** |
-| **Status update** (fix timeline or reason for rejection) | Within **10 business days** |
-| **Fix and coordinated disclosure** | Within **90 days** of acknowledgement for confirmed vulnerabilities; shorter for critical issues |
+In practice we aim to acknowledge a report within a few weeks and to assess and fix
+confirmed issues as promptly as the severity warrants — but these are intentions, not
+commitments.
+
+So that good-faith researchers are never left waiting indefinitely: **if 90 days pass after
+your report without a fix or a substantive response, you are free to disclose publicly.**
+This protects you, not us.
 
 ### Coordinated disclosure
 
