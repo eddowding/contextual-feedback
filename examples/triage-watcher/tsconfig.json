@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": false,
+    "noEmit": true,
+    "types": ["node", "vitest/globals"]
+  },
+  "comment": "This in-repo example consumes the library via relative source imports (src/lib-imports.ts) so it type-checks against the same tree it ships beside. In a standalone deployment, point lib-imports.ts at 'contextual-feedback/ai' and restore rootDir/outDir for emit. tsc is used for typecheck only; build/run is via the parent repo's tooling.",
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}
