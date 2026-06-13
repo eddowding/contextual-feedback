@@ -20,6 +20,7 @@ export type {
   TriageResponse,
   Resolution,
   ResolveResponse,
+  FetchLike,
   TriageDecision,
   TriageDisposition,
   TriageAuditRecord,
