@@ -302,11 +302,12 @@ export function createApiHandlers(config: ApiConfig) {
           );
         }
 
-        if (category !== undefined && !VALID_CATEGORIES.includes(category)) {
-          return new Response(
-            JSON.stringify({ error: `Invalid category. Must be one of: ${VALID_CATEGORIES.join(', ')}` }),
-            { status: 400, headers: { 'Content-Type': 'application/json' } }
-          );
+        // Delegate category validation to the canonical validator so the rule
+        // and its error message live in one place (validateFeedbackInput),
+        // rather than re-implementing the enum check here.
+        const categoryErrors = validateFeedbackInput({ category }, { partial: true });
+        if (categoryErrors.length > 0) {
+          return jsonResponse({ error: categoryErrors[0].message }, 400);
         }
 
         const adminNotesError = validateAdminNotes(adminNotes);
@@ -477,13 +478,12 @@ export function createApiHandlers(config: ApiConfig) {
         let results: Feedback[];
         const failed: string[] = [];
         if (adapter.bulkUpdate) {
+          // bulkUpdate always resolves a BulkUpdateResult. Atomic adapters
+          // (postgres) throw on any error → caught below as a 500; per-item
+          // adapters (supabase) report retryable errors in `failed`.
           const bulkResult = await adapter.bulkUpdate(updates);
-          if (Array.isArray(bulkResult)) {
-            results = bulkResult;
-          } else {
-            results = bulkResult.updated;
-            failed.push(...bulkResult.failed.map(f => f.id));
-          }
+          results = bulkResult.updated;
+          failed.push(...bulkResult.failed.map(f => f.id));
         } else {
           results = [];
           for (const { id, ...update } of updates) {
@@ -503,8 +503,11 @@ export function createApiHandlers(config: ApiConfig) {
 
         if (config.onResolve) {
           const { onResolve } = config;
+          // Index the updates by id once (O(n)) rather than scanning the
+          // updates array for every result (O(n·m)) on large batches.
+          const updateById = new Map(updates.map(u => [u.id, u]));
           for (const result of results) {
-            const matchingUpdate = updates.find(u => u.id === result.id);
+            const matchingUpdate = updateById.get(result.id);
             if (matchingUpdate) {
               const { id: _id, ...updateFields } = matchingUpdate;
               fireAndForget(() => onResolve(result, updateFields));

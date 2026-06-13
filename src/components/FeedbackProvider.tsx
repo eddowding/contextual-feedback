@@ -126,11 +126,12 @@ export function FeedbackProvider({
   return (
     <FeedbackContext.Provider value={value}>
       {children}
-      {isActivated && (
-        DialogComponent
-          ? <DialogComponent apiEndpoint={apiEndpoint} onSubmit={onSubmit} />
-          : <FeedbackDialog apiEndpoint={apiEndpoint} onSubmit={onSubmit} />
-      )}
+      {isActivated && (() => {
+        // Resolve the component once so the prop list isn't duplicated across
+        // two branches (and a new prop only has to be added in one place).
+        const Dialog = DialogComponent ?? FeedbackDialog;
+        return <Dialog apiEndpoint={apiEndpoint} onSubmit={onSubmit} />;
+      })()}
       {isActivated && mode === 'targeted' && <FeedbackHoverHandler />}
     </FeedbackContext.Provider>
   );

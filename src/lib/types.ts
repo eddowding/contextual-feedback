@@ -88,16 +88,21 @@ export interface FeedbackAdapter {
   /** Bulk update multiple feedback items at once. Applies the same resolvedAt
    *  convention as update().
    *
-   *  Contract: resolves with the successfully updated items — either as a plain
-   *  array (ids that were missing or whose update failed are omitted so callers
-   *  can diff), or as a `BulkUpdateResult` that additionally reports per-item
-   *  ERRORS in `failed`, so callers can distinguish "row gone" from "retry
-   *  later" (the supabase adapter does this, since PostgREST has no
-   *  transactions). Implementations must either be atomic (all-or-nothing — a
-   *  thrown error means nothing was persisted, e.g. the postgres adapter's
-   *  transaction) or continue past per-item failures and report/omit them.
+   *  Contract: always resolves a `BulkUpdateResult`. `updated` holds the items
+   *  that were successfully updated; ids missing from BOTH `updated` and
+   *  `failed` matched no row (the caller diffs to find them). `failed` reports
+   *  per-item ERRORS so the caller can distinguish "row gone" (drop) from
+   *  "retry later".
+   *
+   *  Two valid implementation strategies, both honouring this single type:
+   *  - **Per-item** (e.g. the supabase adapter — PostgREST has no
+   *    transactions): continue past a per-item error and record it in `failed`.
+   *  - **Atomic** (e.g. the postgres adapter's transaction): all-or-nothing —
+   *    on any error the whole batch rolls back and the method THROWS (the
+   *    handler maps that to a 500). On success it returns `failed: []`.
+   *
    *  Never persist partial updates and then throw. */
-  bulkUpdate?(updates: Array<{ id: string } & FeedbackUpdate>): Promise<Feedback[] | BulkUpdateResult>;
+  bulkUpdate?(updates: Array<{ id: string } & FeedbackUpdate>): Promise<BulkUpdateResult>;
 }
 
 export interface ValidationError {
@@ -133,7 +138,7 @@ export function computeResolvedAt(
  * Anything carrying another scheme (javascript:, data:, vbscript:, …) is
  * rejected — those are script vectors when later rendered as an anchor href.
  */
-function isSafePageUrl(url: string): boolean {
+export function isSafePageUrl(url: string): boolean {
   let parsed: URL | null = null;
   try {
     parsed = new URL(url);
@@ -205,13 +210,20 @@ export function validateFeedbackInput(
       const trimmed = input.userEmail.trim();
       if (trimmed && !trimmed.includes('@')) {
         errors.push({ field: 'userEmail', message: 'Invalid email format' });
+      } else if (trimmed.length > 255) {
+        // user_email is VARCHAR(255) in the SQL schemas — reject oversized
+        // values here as a 400 instead of letting the database length error
+        // surface as a 500 (matching the context/elementId caps below).
+        errors.push({ field: 'userEmail', message: 'Email must be 255 characters or less' });
       }
     }
   }
 
   // context and element_id are VARCHAR(255) in the SQL schemas — reject
   // oversized values here as a 400 instead of letting the database error
-  // surface as a 500 (and cap memory-adapter storage the same way).
+  // surface as a 500. Note this runs at the HTTP boundary (validateFeedbackInput
+  // is called by the API handlers); a caller writing directly through an adapter
+  // is responsible for its own input limits.
   if (input.context !== undefined) {
     if (typeof input.context !== 'string') {
       errors.push({ field: 'context', message: 'Context must be a string' });

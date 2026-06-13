@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useMemo } from 'react';
-import { Feedback, FeedbackStatus, VALID_STATUSES } from '../lib/types';
+import { Feedback, FeedbackStatus, isSafePageUrl, VALID_STATUSES } from '../lib/types';
 import { toTriageItem } from '../lib/ai';
 
 export type ExportFormat = 'default' | 'ai-triage';
@@ -222,16 +222,12 @@ export function FeedbackList({
     }
   };
 
-  // Only http(s) URLs may be rendered as a link — a stored javascript: URL
-  // would otherwise execute in the admin's session when clicked (stored XSS).
-  const isSafeHref = (url: string) => {
-    try {
-      const { protocol } = new URL(url);
-      return protocol === 'http:' || protocol === 'https:';
-    } catch {
-      return false;
-    }
-  };
+  // Reuse the write-time validator (isSafePageUrl in lib/types) as the
+  // render-time XSS guard so the two can never drift: only http(s) absolute
+  // URLs or relative paths may become a clickable link — a stored
+  // javascript:/data: URL would otherwise execute in the admin's session when
+  // clicked (stored XSS).
+  const isSafeHref = isSafePageUrl;
 
   if (loading) {
     return (

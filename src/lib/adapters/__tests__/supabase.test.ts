@@ -359,10 +359,9 @@ describe('createSupabaseAdapter', () => {
 
   describe('bulkUpdate', () => {
     it('updates each id and returns the mapped rows', async () => {
-      // fb_1: preserve fetch + update; fb_2: preserve fetch + update
-      mock.queueResult({ data: { resolved_at: null }, error: null });
+      // One batched resolved_at read up front, then one update per item.
+      mock.queueResult({ data: [{ id: 'fb_1', resolved_at: null }, { id: 'fb_2', resolved_at: null }], error: null });
       mock.queueResult({ data: [makeRow({ id: 'fb_1', status: 'Done' })], error: null });
-      mock.queueResult({ data: { resolved_at: null }, error: null });
       mock.queueResult({ data: [makeRow({ id: 'fb_2', status: 'Rejected' })], error: null });
 
       const result = (await makeAdapter().bulkUpdate!([
@@ -374,15 +373,16 @@ describe('createSupabaseAdapter', () => {
       expect(result.updated[0].id).toBe('fb_1');
       expect(result.updated[1].id).toBe('fb_2');
       expect(result.failed).toEqual([]);
-      // Update builders (indexes 1 and 3) target the right ids
+      // Builder 0 is the single batched read (.in over both ids); builders 1
+      // and 2 are the per-item updates.
+      expect(mock.builders[0].in).toHaveBeenCalledWith('id', ['fb_1', 'fb_2']);
       expect(mock.builders[1].eq).toHaveBeenCalledWith('id', 'fb_1');
-      expect(mock.builders[3].eq).toHaveBeenCalledWith('id', 'fb_2');
+      expect(mock.builders[2].eq).toHaveBeenCalledWith('id', 'fb_2');
     });
 
     it('skips ids whose update matches no rows', async () => {
-      mock.queueResult({ data: { resolved_at: null }, error: null });
+      mock.queueResult({ data: [{ id: 'fb_1', resolved_at: null }], error: null }); // batched read (missing absent)
       mock.queueResult({ data: [makeRow({ id: 'fb_1', status: 'Done' })], error: null });
-      mock.queueResult({ data: null, error: { message: 'not found' } }); // preserve fetch ignored
       mock.queueResult({ data: [], error: null }); // update matches nothing
 
       const result = (await makeAdapter().bulkUpdate!([
@@ -403,10 +403,9 @@ describe('createSupabaseAdapter', () => {
       // distinguish "retry later" from "row gone".
       const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-      // fb_1: preserve fetch + failing update; fb_2: preserve fetch + successful update
-      mock.queueResult({ data: { resolved_at: null }, error: null });
+      // batched read, then fb_1 failing update, then fb_2 successful update
+      mock.queueResult({ data: [{ id: 'fb_1', resolved_at: null }, { id: 'fb_2', resolved_at: null }], error: null });
       mock.queueResult({ data: null, error: { message: 'Bulk failed' } });
-      mock.queueResult({ data: { resolved_at: null }, error: null });
       mock.queueResult({ data: [makeRow({ id: 'fb_2', status: 'Done' })], error: null });
 
       const result = (await makeAdapter().bulkUpdate!([

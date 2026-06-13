@@ -131,6 +131,20 @@ describe('validateFeedbackInput', () => {
     expect(errors).toEqual([]);
   });
 
+  it('rejects an over-255-char email (user_email is VARCHAR(255)) as a 400, not a DB 500', () => {
+    const longEmail = 'a'.repeat(250) + '@b.com'; // 256 chars, valid format
+    const errors = validateFeedbackInput({ userEmail: longEmail }, { partial: true });
+    expect(errors).toEqual([
+      { field: 'userEmail', message: 'Email must be 255 characters or less' },
+    ]);
+  });
+
+  it('allows an email at exactly 255 chars', () => {
+    const email = 'a'.repeat(249) + '@b.com'; // 255 chars
+    const errors = validateFeedbackInput({ userEmail: email }, { partial: true });
+    expect(errors).toEqual([]);
+  });
+
   it('returns multiple errors at once', () => {
     const errors = validateFeedbackInput({
       feedbackText: '',

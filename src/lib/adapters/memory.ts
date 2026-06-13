@@ -1,4 +1,4 @@
-import { computeResolvedAt, Feedback, FeedbackAdapter, FeedbackInput, FeedbackStatus, FeedbackUpdate } from '../types';
+import { BulkUpdateResult, computeResolvedAt, Feedback, FeedbackAdapter, FeedbackInput, FeedbackStatus, FeedbackUpdate } from '../types';
 
 /**
  * In-memory adapter for development and testing
@@ -77,19 +77,20 @@ export function createMemoryAdapter(): FeedbackAdapter {
       return Array.from(storage.values()).filter(f => f.status === status).length;
     },
 
-    async bulkUpdate(updates: Array<{ id: string } & FeedbackUpdate>): Promise<Feedback[]> {
+    async bulkUpdate(updates: Array<{ id: string } & FeedbackUpdate>): Promise<BulkUpdateResult> {
       const results: Feedback[] = [];
 
       for (const { id, ...update } of updates) {
         const existing = storage.get(id);
-        if (!existing) continue;
+        if (!existing) continue; // missing row — caller diffs to find it
 
         const updated = applyUpdate(existing, update);
         storage.set(id, updated);
         results.push(updated);
       }
 
-      return results;
+      // The in-memory store never errors per item, so `failed` is always empty.
+      return { updated: results, failed: [] };
     }
   };
 }

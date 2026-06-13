@@ -222,33 +222,33 @@ describe('createPostgresAdapter', () => {
   });
 
   describe('delete', () => {
-    it('returns true when rowCount is 1 and uses a parameterized query', async () => {
-      pool.query.mockResolvedValue({ rows: [], rowCount: 1 });
+    it('returns true when a row is returned and uses a parameterized RETURNING query', async () => {
+      pool.query.mockResolvedValue({ rows: [{ id: 'fb_123' }] });
 
       const adapter = createPostgresAdapter({ pool });
       const deleted = await adapter.delete!('fb_123');
 
       expect(pool.query).toHaveBeenCalledWith(
-        'DELETE FROM feedback WHERE id = $1',
+        'DELETE FROM feedback WHERE id = $1 RETURNING id',
         ['fb_123']
       );
       expect(deleted).toBe(true);
     });
 
-    it('returns false when rowCount is 0 (missing id)', async () => {
-      pool.query.mockResolvedValue({ rows: [], rowCount: 0 });
+    it('returns false when no row is returned (missing id)', async () => {
+      pool.query.mockResolvedValue({ rows: [] });
 
       const adapter = createPostgresAdapter({ pool });
       expect(await adapter.delete!('missing')).toBe(false);
     });
 
-    it('returns false when rowCount is undefined', async () => {
-      // The declared pool type doesn't include rowCount, so a driver omitting
-      // it must read as "nothing deleted", not crash or return true.
-      pool.query.mockResolvedValue({ rows: [] });
+    it('does not depend on rowCount (RETURNING is driver-agnostic)', async () => {
+      // The declared pool type has no rowCount; a successful delete must report
+      // true from the RETURNING rows alone, even when the driver omits rowCount.
+      pool.query.mockResolvedValue({ rows: [{ id: 'fb_123' }] });
 
       const adapter = createPostgresAdapter({ pool });
-      expect(await adapter.delete!('fb_123')).toBe(false);
+      expect(await adapter.delete!('fb_123')).toBe(true);
     });
   });
 
@@ -309,7 +309,9 @@ describe('createPostgresAdapter', () => {
       // Nothing runs through the pool itself — that would use other connections.
       expect(poolWithConnect.query).not.toHaveBeenCalled();
       expect(client.release).toHaveBeenCalledOnce();
-      expect(results).toHaveLength(1);
+      expect(results.updated).toHaveLength(1);
+      // Atomic adapter: success means no per-item failures.
+      expect(results.failed).toHaveLength(0);
     });
 
     it('rolls back on the same client and still releases it on error', async () => {
@@ -366,7 +368,7 @@ describe('createPostgresAdapter', () => {
 
       expect(clientLikePool.query).toHaveBeenCalledWith('BEGIN');
       expect(clientLikePool.query).toHaveBeenCalledWith('COMMIT');
-      expect(results).toHaveLength(1);
+      expect(results.updated).toHaveLength(1);
     });
   });
 

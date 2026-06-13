@@ -252,28 +252,28 @@ describe('createMemoryAdapter', () => {
     const fb1 = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'A' });
     const fb2 = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'B' });
 
-    // The memory adapter keeps the plain-array bulkUpdate return shape.
-    const results = (await adapter.bulkUpdate!([
+    const { updated, failed } = await adapter.bulkUpdate!([
       { id: fb1.id, status: 'Done', adminNotes: 'Fixed' },
       { id: fb2.id, status: 'Rejected' },
-    ])) as Feedback[];
+    ]);
 
-    expect(results).toHaveLength(2);
-    expect(results[0].status).toBe('Done');
-    expect(results[0].adminNotes).toBe('Fixed');
-    expect(results[0].resolvedAt).toBeTruthy();
-    expect(results[1].status).toBe('Rejected');
-    expect(results[1].resolvedAt).toBeTruthy();
+    expect(updated).toHaveLength(2);
+    expect(failed).toHaveLength(0);
+    expect(updated[0].status).toBe('Done');
+    expect(updated[0].adminNotes).toBe('Fixed');
+    expect(updated[0].resolvedAt).toBeTruthy();
+    expect(updated[1].status).toBe('Rejected');
+    expect(updated[1].resolvedAt).toBeTruthy();
   });
 
   it('bulkUpdate skips non-existent ids', async () => {
     const fb = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'A' });
 
-    const results = await adapter.bulkUpdate!([
+    const { updated } = await adapter.bulkUpdate!([
       { id: fb.id, status: 'Done' },
       { id: 'nonexistent', status: 'Done' },
     ]);
 
-    expect(results).toHaveLength(1);
+    expect(updated).toHaveLength(1);
   });
 });

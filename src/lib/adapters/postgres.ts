@@ -1,5 +1,5 @@
 import { buildFeedbackSchemaSql } from '../schema';
-import { Feedback, FeedbackAdapter, FeedbackInput, FeedbackStatus, FeedbackUpdate } from '../types';
+import { BulkUpdateResult, Feedback, FeedbackAdapter, FeedbackInput, FeedbackStatus, FeedbackUpdate } from '../types';
 
 const VALID_TABLE_NAME = /^[a-zA-Z_][a-zA-Z0-9_.]*$/;
 function validateTableName(name: string): string {
@@ -160,11 +160,15 @@ export function createPostgresAdapter(config: PostgresConfig): FeedbackAdapter {
     },
 
     async delete(id: string): Promise<boolean> {
+      // Use RETURNING rather than result.rowCount: rowCount is a pg-specific
+      // field absent from the PostgresQueryable interface, so a conforming
+      // driver that returns only { rows } would otherwise make a successful
+      // delete report false. Row presence in the result is driver-agnostic.
       const result = await pool.query(
-        `DELETE FROM ${table} WHERE id = $1`,
+        `DELETE FROM ${table} WHERE id = $1 RETURNING id`,
         [id]
       );
-      return (result as { rowCount?: number }).rowCount === 1;
+      return result.rows.length > 0;
     },
 
     async getCount(status?: FeedbackStatus): Promise<number> {
@@ -177,7 +181,10 @@ export function createPostgresAdapter(config: PostgresConfig): FeedbackAdapter {
       return parseInt(result.rows[0].count as string, 10);
     },
 
-    async bulkUpdate(updates: Array<{ id: string } & FeedbackUpdate>): Promise<Feedback[]> {
+    async bulkUpdate(updates: Array<{ id: string } & FeedbackUpdate>): Promise<BulkUpdateResult> {
+      // This adapter is ATOMIC: the whole batch runs in one transaction, so on
+      // any error it rolls back and throws (the RESOLVE handler maps that to a
+      // 500). On success every item was updated, so `failed` is always empty.
       const runUpdates = async (executor: PostgresQueryable): Promise<Feedback[]> => {
         const results: Feedback[] = [];
 
@@ -227,7 +234,7 @@ export function createPostgresAdapter(config: PostgresConfig): FeedbackAdapter {
           await client.query('BEGIN');
           const results = await runUpdates(client);
           await client.query('COMMIT');
-          return results;
+          return { updated: results, failed: [] };
         } catch (error) {
           await client.query('ROLLBACK');
           throw error;
@@ -242,7 +249,7 @@ export function createPostgresAdapter(config: PostgresConfig): FeedbackAdapter {
       try {
         const results = await runUpdates(pool);
         await pool.query('COMMIT');
-        return results;
+        return { updated: results, failed: [] };
       } catch (error) {
         await pool.query('ROLLBACK');
         throw error;

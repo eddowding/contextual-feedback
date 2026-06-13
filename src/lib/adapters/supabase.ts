@@ -212,9 +212,28 @@ export function createSupabaseAdapter(config: SupabaseConfig): FeedbackAdapter {
       const results: Feedback[] = [];
       const failed: BulkUpdateResult['failed'] = [];
 
+      // resolved_at preservation needs the current value for items moving to a
+      // resolved status. Fetch them ALL in one read up front, rather than one
+      // SELECT per item inside the loop (which made a 50-item resolve ~2N
+      // round-trips). PostgREST still can't express COALESCE in an update, so
+      // this batched read is how we keep the original resolution timestamp.
+      const resolvingIds = updates.filter(u => isResolvedStatus(u.status)).map(u => u.id);
+      const existingResolvedAt = new Map<string, unknown>();
+      if (resolvingIds.length > 0) {
+        const { data } = await client
+          .from(tableName)
+          .select('id, resolved_at')
+          .in('id', resolvingIds);
+        for (const row of (data ?? []) as Record<string, unknown>[]) {
+          if (row.resolved_at) existingResolvedAt.set(row.id as string, row.resolved_at);
+        }
+      }
+
       for (const { id, ...update } of updates) {
         const updateData = buildUpdateData(update);
-        await preserveResolvedAt(id, update, updateData);
+        if (isResolvedStatus(update.status) && existingResolvedAt.has(id)) {
+          updateData.resolved_at = existingResolvedAt.get(id);
+        }
 
         const { data, error } = await client.from(tableName).update(updateData).eq('id', id).select();
 
