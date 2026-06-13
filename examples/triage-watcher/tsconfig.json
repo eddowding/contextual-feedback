@@ -15,5 +15,6 @@
   },
   "comment": "This in-repo example consumes the library via relative source imports (src/lib-imports.ts) so it type-checks against the same tree it ships beside. In a standalone deployment, point lib-imports.ts at 'contextual-feedback/ai' and restore rootDir/outDir for emit. tsc is used for typecheck only; build/run is via the parent repo's tooling.",
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "comment-cli": "cli.ts is the deployment entrypoint and is the ONLY file importing '@anthropic-ai/sdk' (a declared dependency of THIS package). In this in-repo example it is excluded from typecheck because the SDK resolves only after `npm install` inside examples/triage-watcher/. Every other module typechecks against the library source. Run `npm install && npm run typecheck` inside this dir to typecheck cli.ts too.",
+  "exclude": ["node_modules", "dist", "src/cli.ts"]
 }

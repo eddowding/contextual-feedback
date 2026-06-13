@@ -129,7 +129,15 @@ export async function runOnce(config: WatcherConfig, deps: Deps): Promise<RunSum
         const orig = idToOriginalIndex.get(subsetItem.id);
         if (orig === undefined) continue;
         judgedIndices.add(orig);
-        byOriginalIndex.set(orig, { ...jd, index: orig });
+        // injectionSuspected is a STICKY canary (README §5.6): if Pass 1 raised
+        // it, the judge cannot clear it — force-escalation must survive a judge
+        // that re-labels the item. OR the two passes.
+        const pass1Flag = byOriginalIndex.get(orig)?.injectionSuspected ?? false;
+        byOriginalIndex.set(orig, {
+          ...jd,
+          index: orig,
+          injectionSuspected: jd.injectionSuspected || pass1Flag,
+        });
       }
       mergedDecisions = [...byOriginalIndex.values()].sort((a, b) => a.index - b.index);
     } catch (err) {
