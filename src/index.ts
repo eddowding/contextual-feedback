@@ -47,4 +47,13 @@ export { detectFeedbackContext, getPageContexts } from './lib/utils';
 //   createMemoryAdapter          → 'contextual-feedback/adapters/memory'
 //   SUPABASE_SETUP_SQL, SUPABASE_RLS_SQL   → 'contextual-feedback/setup'
 export type { ApiConfig } from './api/handlers';
-export type { TriageItem } from './lib/ai';
+export type {
+  TriageItem,
+  TriageDisposition,
+  TriageDecision,
+  TriageAuditRecord,
+} from './lib/ai';
+// The runtime constant TRIAGE_DISPOSITIONS is intentionally NOT re-exported
+// here: like the other ./ai runtime values it lives only on the
+// 'contextual-feedback/ai' subpath, so it never ships under a 'use client'
+// banner. Import it from there when you need the array at runtime.
