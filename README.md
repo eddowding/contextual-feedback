@@ -136,6 +136,13 @@ When users click the feedback button, all marked sections glow blue. They click 
 
 The library is designed to sit inside an AI agent loop. Here's the full cycle:
 
+> **Want it pre-built?** A complete reference watcher ships in
+> [`examples/triage-watcher/`](examples/triage-watcher/) — it polls the TRIAGE
+> endpoint, classifies each item (a fast mechanical pass, then a judgement pass
+> for the close calls), auto-resolves the trivial ones via RESOLVE, and
+> escalates the rest. It's Claude-based but the pattern is provider-neutral; use
+> it as-is or as a template.
+
 ### 1. Triage — get pending feedback
 
 ```ts
@@ -427,6 +434,14 @@ import { SUPABASE_RLS_SQL } from 'contextual-feedback/setup';
 
 Requires a `user_profiles` table with `id` (matches `auth.uid()`) and `role` columns.
 
+The policies: authenticated users can read and insert **their own** feedback —
+`user_email` is bound to the JWT identity, so attribution can't be forged;
+anonymous (`anon` role) submissions are allowed but only as the `'anonymous'`
+sentinel, so the public widget keeps working under RLS; updates and deletes are
+admin-only. (If your server inserts via a plain anon-key client without
+forwarding the user's JWT, attribution is enforced at the API layer instead —
+see the deployment note in `SUPABASE_RLS_SQL`.)
+
 ## Styling
 
 ```tsx
@@ -435,10 +450,29 @@ import 'contextual-feedback/styles.css';
 
 All classes prefixed with `cf-`. Override any class or copy the stylesheet to customize.
 
+## Portability
+
+The library is deliberately thin on assumptions. The only hard coupling is
+React on the front end — every other layer is swappable:
+
+| Layer | Coupling | Notes |
+|-------|----------|-------|
+| **Server runtime** | Web standards only | Handlers take a standard `Request` and return a `Response` (Fetch API), not Express/Next internals — so they drop into Next.js route handlers, Remix, SvelteKit, Hono, Cloudflare Workers, Deno or Bun unchanged. |
+| **Storage / database** | Adapter interface | Supabase, Postgres and in-memory adapters ship; anything else is one `FeedbackAdapter` implementation. |
+| **Auth / identity** | Your callbacks | You inject `authorize()` and `getUserEmail()`. The library imposes no auth system, session model or user table. |
+| **AI provider** | None (core) | The core only *formats* data (`formatForAI` / `toTriageItem`); it never calls a model. Feed the output to any LLM. |
+| **Front-end framework** | React 18+ | The UI components (`FeedbackProvider`, `FeedbackButton`, `FeedbackList`) are React-only. The server, storage and AI layers work with no React at all. |
+| **Reference watcher** | Anthropic Claude | `examples/triage-watcher/` uses Claude, but it's an example consumer, not part of the core — swap the model calls for any provider. |
+
+In short: **runtime-, storage-, auth- and AI-provider-agnostic; React-coupled
+on the client.** A Vue or Svelte front end reuses everything except the
+components; a non-Claude agent reuses everything except the watcher's model
+calls.
+
 ## Requirements
 
-- React 18+
-- Works with Next.js App Router (other frameworks with standard fetch-based API routes)
+- React 18+ (for the UI components only — the server/storage/AI layers have no React dependency)
+- Any runtime with standard `Request`/`Response` fetch-based API routes (Next.js App Router, Remix, Hono, Workers, Deno, Bun, …)
 - Supabase, PostgreSQL, or any custom adapter
 
 ## License
