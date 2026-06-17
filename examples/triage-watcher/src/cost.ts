@@ -30,13 +30,18 @@ function pricingFor(model: string): ModelPricing {
 /** Cost of a call given its usage and model price. */
 export function costOf(usage: AnthropicUsage, model: string): number {
   const p = pricingFor(model);
-  const cacheRead = usage.cache_read_input_tokens ?? 0;
+  // Clamp EVERY component at 0. A malformed/proxy-mangled usage object with a
+  // negative count would otherwise yield a negative cost that SUBTRACTS from the
+  // accumulated daily spend (record() does `state.spentUsd += actual`), letting
+  // withinDailyBudget() under-report and the daily cap be silently exceeded.
+  const cacheRead = Math.max(0, usage.cache_read_input_tokens ?? 0);
   // input_tokens excludes cache reads in the SDK's accounting; price them apart.
   const freshInput = Math.max(0, usage.input_tokens);
+  const output = Math.max(0, usage.output_tokens);
   return (
     (freshInput / 1_000_000) * p.inputPerMTok +
     (cacheRead / 1_000_000) * p.cacheReadPerMTok +
-    (usage.output_tokens / 1_000_000) * p.outputPerMTok
+    (output / 1_000_000) * p.outputPerMTok
   );
 }
 

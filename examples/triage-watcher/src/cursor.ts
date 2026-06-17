@@ -54,17 +54,35 @@ export function commit(
     if (cursor === null || p.submittedAt > cursor) cursor = p.submittedAt;
   }
 
-  // Append committed ids, preserving order; existing ids keep their position but
-  // we de-dupe by rebuilding (newest wins for recency). Then trim to window.
-  const next: string[] = [...state.seenIds];
+  // Only ids whose submittedAt EQUALS the cursor second rely on seenIds to avoid
+  // re-processing: isFresh treats `> cursor` as fresh (those became the new
+  // cursor) and `< cursor` as already-passed (excluded without needing seenIds).
+  // So the cursor-second cohort must NEVER be trimmed — a fixed-size ring could
+  // otherwise evict a same-second id and re-process/re-resolve it next run once
+  // a single second carried more than seenIdWindow items. We split ids into a
+  // protected cursor-second bucket and a trimmable bucket.
+  const cursorAdvanced = cursor !== state.cursorSubmittedAt;
+  // If the cursor didn't advance, prior seenIds sit at the (unchanged) cursor
+  // second and must stay protected; if it advanced, they're strictly before the
+  // new cursor and are safe to trim/drop.
+  const protectedIds: string[] = cursorAdvanced ? [] : [...state.seenIds];
+  const others: string[] = cursorAdvanced ? [...state.seenIds] : [];
   for (const p of committed) {
-    const existingIdx = next.indexOf(p.id);
-    if (existingIdx !== -1) next.splice(existingIdx, 1);
-    next.push(p.id);
+    const oi = others.indexOf(p.id);
+    if (oi !== -1) others.splice(oi, 1);
+    const pi = protectedIds.indexOf(p.id);
+    if (pi !== -1) protectedIds.splice(pi, 1);
+    if (cursor !== null && p.submittedAt === cursor) protectedIds.push(p.id);
+    else others.push(p.id);
   }
-  const trimmed = next.length > seenIdWindow ? next.slice(next.length - seenIdWindow) : next;
 
-  return { cursorSubmittedAt: cursor, seenIds: trimmed };
+  // Trim only the non-cursor-second ids to the window (oldest evicted). The
+  // protected cohort is always retained, so seenIds may briefly exceed the
+  // window during a large same-second burst — correctness over a hard cap.
+  const room = Math.max(0, seenIdWindow - protectedIds.length);
+  const trimmedOthers = others.length > room ? others.slice(others.length - room) : others;
+
+  return { cursorSubmittedAt: cursor, seenIds: [...trimmedOthers, ...protectedIds] };
 }
 
 /**

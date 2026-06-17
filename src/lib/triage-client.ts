@@ -30,7 +30,10 @@ export interface Resolution {
  * Response body of `POST /api/feedback/resolve` (handlers.ts → RESOLVE).
  *
  * - `updated`  — items whose update succeeded.
- * - `notFound` — ids that matched no row (deleted / RLS-filtered). Safe to drop.
+ * - `notFound` — ids that matched no row (deleted, or silently RLS-filtered).
+ *   Usually safe to drop — but if the token lacks UPDATE rights on an
+ *   RLS-protected table, every id lands here, so confirm access before treating
+ *   `notFound` as permanently gone.
  * - `failed`   — ids whose update errored (db outage, RLS misconfig). Retry.
  *
  * The endpoint returns this body on **200** (full/partial success) and on

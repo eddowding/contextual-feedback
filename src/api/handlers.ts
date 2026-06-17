@@ -76,7 +76,10 @@ function parseStatusParam(
   url: URL
 ): { status: FeedbackStatus | undefined; errorResponse?: undefined } | { status?: undefined; errorResponse: Response } {
   const raw = url.searchParams.get('status');
-  if (raw === null) return { status: undefined };
+  // Absent OR present-but-empty (`?status=`) means "no filter" — a client/UI
+  // that always appends the param with an empty default ("All" → '') must keep
+  // getting all rows, not a 400. Only a non-empty unknown value is rejected.
+  if (raw === null || raw === '') return { status: undefined };
   if (!VALID_STATUSES.includes(raw as FeedbackStatus)) {
     return {
       errorResponse: jsonResponse(
@@ -218,9 +221,13 @@ export function createApiHandlers(config: ApiConfig) {
         // default the server-derived email (getUserEmail) takes precedence. Only when
         // `trustClientEmail` is true does the client body email win (legacy behaviour).
         const serverEmail = getUserEmail ? await getUserEmail(request) : null;
-        const userEmail = trustClientEmail
-          ? (bodyEmail?.trim() || serverEmail || 'anonymous')
-          : (serverEmail || bodyEmail?.trim() || 'anonymous');
+        const trimmedBodyEmail = bodyEmail?.trim() || null;
+        // The email that actually came from a source (server identity or client
+        // body). `null` means no source at all → genuinely anonymous.
+        const sourcedEmail = trustClientEmail
+          ? (trimmedBodyEmail || serverEmail)
+          : (serverEmail || trimmedBodyEmail);
+        const userEmail = sourcedEmail ?? 'anonymous';
 
         // Full (non-partial) validation: missing/empty feedbackText and pageUrl
         // are rejected here, so no duplicated required-field checks are needed.
@@ -229,9 +236,12 @@ export function createApiHandlers(config: ApiConfig) {
           pageUrl,
           context,
           elementId,
-          // 'anonymous' is the sentinel for submissions with no email source —
-          // skip the email-format check for it so anonymous feedback is accepted.
-          ...(userEmail === 'anonymous' ? {} : { userEmail }),
+          // Validate the email format whenever it came from an actual source.
+          // The 'anonymous' sentinel is assigned ONLY when there is no source, so
+          // a client can no longer be stored as anonymous by sending the literal
+          // string "anonymous" — that is a sourced value and fails the format
+          // check (400) instead of silently masquerading as genuine-anonymous.
+          ...(sourcedEmail !== null ? { userEmail: sourcedEmail } : {}),
           category,
         });
 
@@ -412,16 +422,26 @@ export function createApiHandlers(config: ApiConfig) {
      * Bulk-update feedback items with status + admin notes.
      *
      * Responds with `{ updated: Feedback[], notFound: string[], failed: string[] }`:
-     * - `notFound` — ids whose update matched no row (deleted, never existed, or
-     *   filtered by row-level security). Safe to drop.
+     * - `notFound` — ids whose update matched no row: deleted, never existed, OR
+     *   silently filtered by row-level security (RLS returns zero rows without an
+     *   error, indistinguishable at the data layer from a genuine miss). Usually
+     *   safe to drop — but if the caller is hitting an RLS-protected table without
+     *   the required identity, EVERY id lands here, so ensure the resolving client
+     *   has UPDATE rights before treating `notFound` as permanently gone.
      * - `failed` — ids whose individual update ERRORED (db outage, bad credentials,
-     *   RLS misconfiguration). These should be retried, not treated as gone.
+     *   RLS misconfiguration that raises). These should be retried, not treated as gone.
      *
      * Status is 200 for full/partial success, or 500 when nothing was updated and
      * at least one update errored — so an infrastructure failure is never reported
      * as an all-items-missing success.
      */
     async RESOLVE(request: Request): Promise<Response> {
+      // Ids of the parsed batch, captured so the catch-all 500 below can still
+      // return the documented {updated, notFound, failed} ResolveResponse shape
+      // (with every id in `failed`) rather than a differently-shaped {error}
+      // body. Typed clients read `failed` to retry; a bare {error} would make
+      // them iterate `undefined` and throw.
+      let resolveIds: string[] | null = null;
       try {
         const authResponse = await checkAuth(request);
         if (authResponse) return authResponse;
@@ -465,6 +485,10 @@ export function createApiHandlers(config: ApiConfig) {
           const adminNotesError = validateAdminNotes(resolution.adminNotes, { forId: resolution.id });
           if (adminNotesError) return adminNotesError;
         }
+
+        // Validation passed: record the ids so an unexpected throw below (e.g. an
+        // atomic adapter's ROLLBACK rethrow) still yields a ResolveResponse body.
+        resolveIds = resolutions.map((r: { id: string }) => r.id);
 
         const updates: Array<{ id: string } & FeedbackUpdate> = resolutions.map(
           (r: { id: string; status?: FeedbackStatus; adminNotes?: string; category?: FeedbackUpdate['category'] }) => ({
@@ -533,10 +557,14 @@ export function createApiHandlers(config: ApiConfig) {
         });
       } catch (error) {
         console.error('Error resolving feedback:', error);
-        return new Response(
-          JSON.stringify({ error: 'Failed to resolve feedback' }),
-          { status: 500, headers: { 'Content-Type': 'application/json' } }
-        );
+        // Honour the ResolveResponse contract on the catch-all 500: report every
+        // parsed id as `failed` (retryable) so a typed client can act on it. Only
+        // fall back to {error} when we threw before parsing any ids (in which
+        // case the request never reached the item-processing stage).
+        if (resolveIds) {
+          return jsonResponse({ updated: [], notFound: [], failed: resolveIds }, 500);
+        }
+        return jsonResponse({ error: 'Failed to resolve feedback' }, 500);
       }
     }
   };

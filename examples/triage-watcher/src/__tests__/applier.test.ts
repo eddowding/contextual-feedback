@@ -98,4 +98,29 @@ describe('applyPlan', () => {
     const res = await applyPlan([planEntry({ index: 1 })], { 1: 'a' }, { triageClient: client, logger: createNullLogger() });
     expect(res.byId.a).toBe('failed');
   });
+
+  it('never throws when resolve() rejects — treats the whole batch as failed (retryable)', async () => {
+    const client = fakeTriageClient({
+      async resolve(): Promise<ResolveResponse> {
+        throw new Error('RESOLVE failed with status 401');
+      },
+    });
+    const plan = [planEntry({ index: 1 }), planEntry({ index: 2 })];
+    const res = await applyPlan(plan, { 1: 'a', 2: 'b' }, { triageClient: client, logger: createNullLogger() });
+    expect(res.failed.sort()).toEqual(['a', 'b']);
+    expect(res.byId).toEqual({ a: 'failed', b: 'failed' });
+  });
+
+  it('never throws on a malformed 500 body lacking the response arrays', async () => {
+    const client = fakeTriageClient({
+      // Mimic the catch-all 500 returning {error} (cast to ResolveResponse).
+      async resolve(): Promise<ResolveResponse> {
+        return { error: 'Failed to resolve feedback' } as unknown as ResolveResponse;
+      },
+    });
+    const res = await applyPlan([planEntry({ index: 1 })], { 1: 'a' }, { triageClient: client, logger: createNullLogger() });
+    // The "sent but unaccounted-for → failed" backstop covers it instead of
+    // throwing on `for...of undefined`.
+    expect(res.byId.a).toBe('failed');
+  });
 });

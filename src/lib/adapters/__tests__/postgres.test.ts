@@ -370,6 +370,20 @@ describe('createPostgresAdapter', () => {
       expect(clientLikePool.query).toHaveBeenCalledWith('COMMIT');
       expect(results.updated).toHaveLength(1);
     });
+
+    it('refuses (throws) when connect() resolves an unusable client instead of running a non-atomic pool transaction', async () => {
+      // A pool whose connect() returns a release-less wrapper must NOT silently
+      // fall through to pool-level BEGIN/COMMIT (which can span connections and
+      // lose atomicity). It must fail loudly.
+      const poolWithBadClient = {
+        query: vi.fn().mockResolvedValue({ rows: [] }),
+        connect: vi.fn().mockResolvedValue({ query: vi.fn() }), // no release()
+      };
+      const adapter = createPostgresAdapter({ pool: poolWithBadClient });
+      await expect(adapter.bulkUpdate!([{ id: 'fb_1', status: 'Done' }])).rejects.toThrow(/usable client|non-atomic/);
+      // Crucially, it never ran a fake transaction on the pool.
+      expect(poolWithBadClient.query).not.toHaveBeenCalledWith('BEGIN');
+    });
   });
 
   describe('getCount', () => {

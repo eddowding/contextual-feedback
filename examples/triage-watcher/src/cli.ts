@@ -15,6 +15,7 @@ import { createJsonlAuditSink } from './audit';
 import { createEscalator } from './escalation';
 import { createRetryQueue } from './retry';
 import { createCostGovernor } from './cost';
+import { createFileDailyQuotaStore } from './quota';
 import { createLogger, systemClock, generateRunId } from './logger';
 import { runOnce } from './run';
 import { startScheduler } from './scheduler';
@@ -46,6 +47,7 @@ function buildDeps(config: ReturnType<typeof loadConfig>): Deps {
       },
       { anthropic, clock: systemClock, logger }
     ),
+    dailyQuotaStore: createFileDailyQuotaStore(`${config.cursorStorePath}.daily-resolves.json`),
     clock: systemClock,
     logger,
     runId: generateRunId(),

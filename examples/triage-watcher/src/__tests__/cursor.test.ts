@@ -95,6 +95,34 @@ describe('commit', () => {
     expect(state.seenIds).not.toContain('id0'); // oldest evicted
   });
 
+  it('never evicts the cursor-second cohort, even when it exceeds the window', () => {
+    // Regression: a fixed-size ring used to evict same-second ids beyond the
+    // window, re-admitting them as fresh next run (double-processing). A whole
+    // same-second cohort larger than the window must stay remembered.
+    const window = 3;
+    const sameSecond = '2025-01-01T00:00:05Z';
+    const cohort: ProcessedItem[] = ['a', 'b', 'c', 'd', 'e'].map(id => ({ id, submittedAt: sameSecond, outcome: 'updated' as const }));
+    const next = commit(EMPTY_CURSOR_STATE, cohort, window);
+    expect(next.cursorSubmittedAt).toBe(sameSecond);
+    for (const id of ['a', 'b', 'c', 'd', 'e']) expect(next.seenIds).toContain(id);
+    // And none of them re-select on the next run.
+    const reappear = ['a', 'b', 'c', 'd', 'e'].map(id => item(id, sameSecond));
+    expect(selectNewItems(reappear, next).fresh).toEqual([]);
+  });
+
+  it('still trims ids that are strictly before the advanced cursor', () => {
+    // Ids at an earlier second than the cursor are excluded by isFresh's
+    // `> cursor` test, so they can be evicted without risk.
+    let state = EMPTY_CURSOR_STATE;
+    const window = 2;
+    for (let i = 0; i < 5; i++) {
+      state = commit(state, [{ id: `id${i}`, submittedAt: `2025-01-01T00:00:0${i}Z`, outcome: 'updated' }], window);
+    }
+    expect(state.cursorSubmittedAt).toBe('2025-01-01T00:00:04Z');
+    expect(state.seenIds).toContain('id4'); // newest (cursor-second) retained
+    expect(state.seenIds).not.toContain('id0'); // oldest, before cursor, evicted
+  });
+
   it('two same-second items: both seen after processing, neither re-processed', () => {
     let state = EMPTY_CURSOR_STATE;
     const items = [item('a', '2025-01-01T00:00:00Z'), item('b', '2025-01-01T00:00:00Z')];

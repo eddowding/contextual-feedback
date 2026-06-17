@@ -120,6 +120,19 @@ export interface RetryQueue {
   drop(id: string): Promise<void>;
 }
 
+/**
+ * Durable per-UTC-day auto-resolve counter. The per-day auto-resolve cap
+ * (README §7) only binds if today's count survives ACROSS the many short runs a
+ * cron scheduler makes — an in-memory counter resets to 0 every run, making the
+ * cap a no-op. This mirrors the cost governor's persisted daily-spend state.
+ */
+export interface DailyQuotaStore {
+  /** Auto-resolves already committed today (UTC); resets across a day boundary. */
+  todayCount(now: number): Promise<number>;
+  /** Add to today's committed count and persist; returns the new total. */
+  add(now: number, n: number): Promise<number>;
+}
+
 export interface CostGovernor {
   /** Estimate the call's cost and allow/deny against the run budget. */
   preflight(
@@ -145,6 +158,7 @@ export interface Deps {
   escalator: Escalator;
   retryQueue: RetryQueue;
   costGovernor: CostGovernor;
+  dailyQuotaStore: DailyQuotaStore;
   clock: Clock;
   logger: Logger;
   /** Per-run correlation id. NEVER interpolated into a cached prompt prefix. */

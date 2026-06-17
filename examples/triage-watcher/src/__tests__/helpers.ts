@@ -9,6 +9,7 @@ import type {
   EscalationItem,
   RetryQueue,
   CostGovernor,
+  DailyQuotaStore,
   Clock,
 } from '../types';
 import type { TriageClient, TriageResponse, ResolveResponse, Resolution, TriageAuditRecord } from '../lib-imports';
@@ -121,6 +122,16 @@ export function fakeCostGovernor(allowed = true): CostGovernor {
   };
 }
 
+/** In-memory daily auto-resolve counter for tests. */
+export function fakeDailyQuotaStore(initial = 0): DailyQuotaStore & { count: number } {
+  const holder = { count: initial };
+  return {
+    get count() { return holder.count; },
+    async todayCount() { return holder.count; },
+    async add(_now: number, n: number) { holder.count += n; return holder.count; },
+  };
+}
+
 export function fakeDeps(overrides: Partial<Deps> = {}): Deps {
   return {
     triageClient: fakeTriageClient(),
@@ -130,6 +141,7 @@ export function fakeDeps(overrides: Partial<Deps> = {}): Deps {
     escalator: fakeEscalator(),
     retryQueue: fakeRetryQueue(),
     costGovernor: fakeCostGovernor(),
+    dailyQuotaStore: fakeDailyQuotaStore(),
     clock: fakeClock(),
     logger: createNullLogger(),
     runId: 'run_test',

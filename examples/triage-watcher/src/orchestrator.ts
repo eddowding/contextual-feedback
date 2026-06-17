@@ -19,7 +19,8 @@ import { ClassifierError } from './classifier-core';
  */
 export async function runOnce(config: WatcherConfig, deps: Deps): Promise<RunSummary> {
   const {
-    triageClient, cursorStore, retryQueue, costGovernor, auditSink, escalator, clock, logger, runId,
+    triageClient, cursorStore, retryQueue, costGovernor, dailyQuotaStore,
+    auditSink, escalator, clock, logger, runId,
   } = deps;
 
   const summary: RunSummary = { runId, polled: 0, classified: 0, autoResolved: 0, escalated: 0, failed: 0 };
@@ -103,8 +104,11 @@ export async function runOnce(config: WatcherConfig, deps: Deps): Promise<RunSum
   await costGovernor.record(pass1.usage, config.classifyModel);
   summary.classified = pass1.decisions.length;
 
-  // 7. Provisional plan → subsetForJudge.
-  const dayCounters: DayCounters = { autoResolvesToday: 0 };
+  // 7. Provisional plan → subsetForJudge. Seed the day counter from the PERSISTED
+  // per-UTC-day total so the per-day auto-resolve cap actually binds across runs
+  // (an in-memory 0 here would reset the cap every run, leaving only the per-run
+  // cap live).
+  const dayCounters: DayCounters = { autoResolvesToday: await dailyQuotaStore.todayCount(now) };
   const provisional = planActions(pass1.decisions, working, config.policy, dayCounters);
 
   // 8. Pass 2 (judge) on the ambiguous subset; merge; re-plan.
@@ -175,6 +179,7 @@ export async function runOnce(config: WatcherConfig, deps: Deps): Promise<RunSum
 
   // 11. Cursor commit + retry bookkeeping.
   const processed: ProcessedItem[] = [];
+  let committedAutoResolves = 0;
   for (const entry of finalPlan.resolutions) {
     const id = idByIndex[entry.index];
     if (!id) continue;
@@ -183,6 +188,9 @@ export async function runOnce(config: WatcherConfig, deps: Deps): Promise<RunSum
     if (outcome === 'updated' || outcome === 'dry-run') {
       processed.push({ id, submittedAt: submittedAtByIndex[entry.index], outcome: 'updated' });
       await retryQueue.recordOutcome(id);
+      // Count only real (non-dry-run) auto-resolves toward the persisted daily
+      // quota — escalations and dry-runs don't consume the auto-resolve budget.
+      if (outcome === 'updated' && entry.action === 'auto-resolve') committedAutoResolves += 1;
     } else if (outcome === 'notFound') {
       processed.push({ id, submittedAt: submittedAtByIndex[entry.index], outcome: 'dropped' });
       await retryQueue.recordOutcome(id);
@@ -194,6 +202,10 @@ export async function runOnce(config: WatcherConfig, deps: Deps): Promise<RunSum
   }
   const newState = commit(state, processed, config.seenIdWindow);
   await cursorStore.save(newState);
+
+  // Persist the day's committed auto-resolve count so the per-day cap carries
+  // into the next run (and the next scheduler tick).
+  if (committedAutoResolves > 0) await dailyQuotaStore.add(now, committedAutoResolves);
 
   // Tally.
   for (const entry of finalPlan.resolutions) {
@@ -306,7 +318,11 @@ async function escalateEverything(
       processed.push({ id, submittedAt: submittedAtByIndex[entry.index], outcome: 'dropped' });
       await retryQueue.recordOutcome(id);
     } else {
+      // failed — enqueue for backoff like the main path does (orchestrator step
+      // 11). These are ordinary (non-exhausted) items, so a transient RESOLVE
+      // write failure here must NOT silently drop them from the retry queue.
       processed.push({ id, submittedAt: submittedAtByIndex[entry.index], outcome: 'failed' });
+      await retryQueue.enqueue(id, clock.now());
       summary.failed += 1;
     }
   }

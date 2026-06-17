@@ -1,4 +1,4 @@
-import type { Resolution, TriageClient } from './lib-imports';
+import type { Resolution, ResolveResponse, TriageClient } from './lib-imports';
 import type { Logger } from './types';
 import type { PlannedResolution } from './policy';
 
@@ -74,17 +74,44 @@ export async function applyPlan(
   });
 
   const idsSent = new Set(mapped.map(m => m.id));
-  const response = await triageClient.resolve(resolutions);
 
-  for (const fb of response.updated) {
+  // The "never throws here" contract is load-bearing: a throw out of applyPlan
+  // aborts runOnce AFTER model spend but BEFORE the audit append + cursor commit
+  // (orchestrator step 10/11), so the batch is re-fetched and re-billed next run
+  // with no audit trail. The client throws only on an unexpected HTTP status
+  // (401/415/…) or an unparseable body — neither actionable per-item — so treat
+  // the whole batch as `failed` (retryable) and let the run still audit+commit.
+  let response: ResolveResponse;
+  try {
+    response = await triageClient.resolve(resolutions);
+  } catch (err) {
+    logger.error('ALARM: RESOLVE call threw — treating batch as failed (retryable)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    for (const id of idsSent) {
+      result.failed.push(id);
+      result.byId[id] = 'failed';
+    }
+    return result;
+  }
+
+  // Guard against a malformed body (e.g. a 500 whose shape is {error} rather
+  // than {updated, notFound, failed}): default each list to [] so we fall
+  // through to the "sent but unaccounted-for → failed" backstop below instead
+  // of throwing on `for...of undefined`.
+  const updated = Array.isArray(response.updated) ? response.updated : [];
+  const notFoundIds = Array.isArray(response.notFound) ? response.notFound : [];
+  const failedIds = Array.isArray(response.failed) ? response.failed : [];
+
+  for (const fb of updated) {
     result.updated.push(fb.id);
     result.byId[fb.id] = 'updated';
   }
-  for (const id of response.notFound) {
+  for (const id of notFoundIds) {
     result.notFound.push(id);
     result.byId[id] = 'notFound';
   }
-  for (const id of response.failed) {
+  for (const id of failedIds) {
     result.failed.push(id);
     result.byId[id] = 'failed';
   }

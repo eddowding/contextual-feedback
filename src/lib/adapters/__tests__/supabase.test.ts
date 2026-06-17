@@ -253,6 +253,20 @@ describe('createSupabaseAdapter', () => {
       expect(payload.admin_notes).toBe('still fixed');
     });
 
+    it('omits resolved_at (preserving the stored value) when the pre-read errors', async () => {
+      // If the existing-value lookup fails, we must NOT write a fresh now() — that
+      // would clobber the original resolution timestamp. Omitting resolved_at
+      // leaves PostgREST's stored column untouched.
+      mock.queueResult({ data: null, error: { message: 'network blip' } });
+      mock.queueResult({ data: [makeRow({ status: 'Done' })], error: null });
+
+      await makeAdapter().update('fb_1', { status: 'Done' });
+
+      const payload = mock.builders[1].update.mock.calls[0][0];
+      expect(payload).not.toHaveProperty('resolved_at');
+      expect(payload.status).toBe('Done');
+    });
+
     it.each(['Pending', 'In Review'] as const)(
       'sets resolved_at to null for %s without fetching the existing row',
       async (status) => {

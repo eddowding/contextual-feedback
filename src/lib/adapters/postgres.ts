@@ -214,6 +214,12 @@ export function createPostgresAdapter(config: PostgresConfig): FeedbackAdapter {
       // connect() (resolving void / throwing when already connected), so we
       // duck-type the resolved value before trusting it as a pool client.
       let client: PostgresPoolClient | undefined;
+      // True only when connect() resolved a value that ISN'T a usable pool
+      // client. That means the object IS pool-like (it has connect()) but we
+      // can't pin all statements to one connection — so a pool-level
+      // BEGIN/COMMIT would NOT be atomic. We must refuse rather than silently
+      // degrade the all-or-nothing contract.
+      let connectReturnedUnusable = false;
       if (typeof pool.connect === 'function') {
         try {
           const candidate = await pool.connect();
@@ -223,9 +229,13 @@ export function createPostgresAdapter(config: PostgresConfig): FeedbackAdapter {
             typeof candidate.release === 'function'
           ) {
             client = candidate;
+          } else {
+            connectReturnedUnusable = true;
           }
         } catch {
-          // Not a Pool (e.g. an already-connected pg Client) — fall through.
+          // connect() threw — the already-connected pg Client case, whose
+          // query() always runs on its single connection, so the bare-client
+          // transaction path below is safe. Fall through.
         }
       }
 
@@ -241,6 +251,14 @@ export function createPostgresAdapter(config: PostgresConfig): FeedbackAdapter {
         } finally {
           client.release();
         }
+      }
+
+      if (connectReturnedUnusable) {
+        throw new Error(
+          'bulkUpdate: pool.connect() did not return a usable client (missing query/release). ' +
+            'Refusing to run a non-atomic pool-level transaction — pass a real pg Pool, or a ' +
+            'single-connection Client without a connect() method.'
+        );
       }
 
       // Bare single-connection client: its query() always runs on the one

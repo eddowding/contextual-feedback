@@ -118,11 +118,21 @@ export function createSupabaseAdapter(config: SupabaseConfig): FeedbackAdapter {
       .eq('id', id)
       .single();
 
-    if (error) return;
+    if (error) {
+      // We can't read the prior value (transient error or missing row). Do NOT
+      // keep the optimistic now() buildUpdateData set: omit resolved_at so
+      // PostgREST leaves the column untouched, preserving any existing
+      // resolution timestamp rather than clobbering it with a fresh now(). (A
+      // genuine first-resolution may miss its stamp on a transient error —
+      // acceptable vs corrupting resolution-latency history.)
+      delete updateData.resolved_at;
+      return;
+    }
     const existing = (data as Record<string, unknown> | null)?.resolved_at;
     if (existing) {
       updateData.resolved_at = existing;
     }
+    // else: no prior value → keep buildUpdateData's now() (genuine first resolve).
   }
 
   return {
@@ -219,20 +229,34 @@ export function createSupabaseAdapter(config: SupabaseConfig): FeedbackAdapter {
       // this batched read is how we keep the original resolution timestamp.
       const resolvingIds = updates.filter(u => isResolvedStatus(u.status)).map(u => u.id);
       const existingResolvedAt = new Map<string, unknown>();
+      let resolvedReadOk = true;
       if (resolvingIds.length > 0) {
-        const { data } = await client
+        const { data, error } = await client
           .from(tableName)
           .select('id, resolved_at')
           .in('id', resolvingIds);
-        for (const row of (data ?? []) as Record<string, unknown>[]) {
-          if (row.resolved_at) existingResolvedAt.set(row.id as string, row.resolved_at);
+        if (error) {
+          // The pre-read failed: we don't know prior values, so don't overwrite
+          // resolved_at for any resolving id (preserve existing timestamps)
+          // instead of stamping every one with now() and corrupting history.
+          resolvedReadOk = false;
+          console.error(`bulkUpdate resolved_at pre-read failed: ${error.message}`);
+        } else {
+          for (const row of (data ?? []) as Record<string, unknown>[]) {
+            if (row.resolved_at) existingResolvedAt.set(row.id as string, row.resolved_at);
+          }
         }
       }
 
       for (const { id, ...update } of updates) {
         const updateData = buildUpdateData(update);
-        if (isResolvedStatus(update.status) && existingResolvedAt.has(id)) {
-          updateData.resolved_at = existingResolvedAt.get(id);
+        if (isResolvedStatus(update.status)) {
+          if (existingResolvedAt.has(id)) {
+            updateData.resolved_at = existingResolvedAt.get(id); // preserve original
+          } else if (!resolvedReadOk) {
+            delete updateData.resolved_at; // unknown prior value → leave untouched
+          }
+          // else: read OK + no prior value → keep buildUpdateData's now().
         }
 
         const { data, error } = await client.from(tableName).update(updateData).eq('id', id).select();

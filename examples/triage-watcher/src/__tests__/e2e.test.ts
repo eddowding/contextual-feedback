@@ -7,7 +7,7 @@ import type { FeedbackAdapter } from '../../../../src/lib/types';
 import { runOnce } from '../run';
 import { loadConfig, type WatcherConfig } from '../config';
 import {
-  fakeAnthropic, okResponse, fakeClock, fakeEscalator, fakeRetryQueue, fakeCostGovernor, fakeCursorStore, fakeAuditSink,
+  fakeAnthropic, okResponse, fakeClock, fakeEscalator, fakeRetryQueue, fakeCostGovernor, fakeCursorStore, fakeAuditSink, fakeDailyQuotaStore,
 } from './helpers';
 import { createNullLogger } from '../logger';
 import type { AnthropicMessageResponse, Deps } from '../types';
@@ -79,6 +79,7 @@ function buildDeps(handlers: ReturnType<typeof createApiHandlers>, anthropic: De
     escalator: fakeEscalator(),
     retryQueue: fakeRetryQueue(),
     costGovernor: fakeCostGovernor(),
+    dailyQuotaStore: fakeDailyQuotaStore(),
     clock: fakeClock(),
     logger: createNullLogger(),
     runId: 'run_e2e',

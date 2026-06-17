@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createMemoryAdapter } from '../memory';
-import { Feedback, FeedbackAdapter } from '../../types';
+import { FeedbackAdapter } from '../../types';
 
 describe('createMemoryAdapter', () => {
   let adapter: FeedbackAdapter;

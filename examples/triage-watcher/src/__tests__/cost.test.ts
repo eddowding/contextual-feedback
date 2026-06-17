@@ -38,6 +38,21 @@ describe('costOf', () => {
     const usd = costOf({ input_tokens: 1_000_000, output_tokens: 0 }, 'mystery-model');
     expect(usd).toBeCloseTo(PRICING['claude-opus-4-8'].inputPerMTok, 5);
   });
+
+  it('never returns a negative cost when a usage component is negative', () => {
+    // A malformed/proxy-mangled usage object must not yield a negative cost that
+    // would SUBTRACT from accumulated daily spend and let the cap be exceeded.
+    const usd = costOf(
+      { input_tokens: 100, output_tokens: -100_000_000, cache_read_input_tokens: -5_000 },
+      'claude-sonnet-4-6'
+    );
+    expect(usd).toBeGreaterThanOrEqual(0);
+  });
+
+  it('clamps each component independently — negative output ignored, input still priced', () => {
+    const usd = costOf({ input_tokens: 1_000_000, output_tokens: -1_000_000 }, 'claude-sonnet-4-6');
+    expect(usd).toBeCloseTo(PRICING['claude-sonnet-4-6'].inputPerMTok, 6);
+  });
 });
 
 describe('createCostGovernor.preflight', () => {

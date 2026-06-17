@@ -652,6 +652,25 @@ describe('createApiHandlers', () => {
       const data = await res.json();
       expect(data.error).toBe('Invalid email format');
     });
+
+    it('rejects a client that supplies the literal "anonymous" sentinel as its email', async () => {
+      // A client must not be able to masquerade as genuine-anonymous by sending
+      // userEmail: "anonymous" — that is a sourced value, so it is validated as
+      // an email and fails the format check rather than being stored silently.
+      const h = createApiHandlers({ adapter });
+
+      const res = await h.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Bug',
+          pageUrl: '/page',
+          userEmail: 'anonymous',
+        })
+      );
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toBe('Invalid email format');
+    });
   });
 
   describe('trustClientEmail option', () => {
@@ -1133,6 +1152,30 @@ describe('createApiHandlers', () => {
       const data = await res.json();
       expect(data).toEqual({ updated: [], notFound: [], failed: ['fb_1'] });
     });
+
+    it('RESOLVE outer-catch (atomic adapter throws) still returns a ResolveResponse shape, not {error}', async () => {
+      // An atomic bulkUpdate that throws (e.g. postgres ROLLBACK rethrow) hits
+      // the handler's catch-all. It must keep the {updated, notFound, failed}
+      // contract — every parsed id in `failed` — so a typed client can retry
+      // instead of choking on a {error}-shaped body.
+      const throwingAdapter: FeedbackAdapter = {
+        getAll: () => Promise.reject(new Error('db down')),
+        getById: () => Promise.reject(new Error('db down')),
+        add: () => Promise.reject(new Error('db down')),
+        update: () => Promise.reject(new Error('db down')),
+        bulkUpdate: () => Promise.reject(new Error('transaction rolled back')),
+      };
+      const h = createApiHandlers({ adapter: throwingAdapter, getUserEmail: async () => 'u@t.com' });
+
+      const res = await h.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [{ id: 'fb_1', status: 'Done' }, { id: 'fb_2', status: 'Rejected' }],
+        })
+      );
+      expect(res.status).toBe(500);
+      const data = await res.json();
+      expect(data).toEqual({ updated: [], notFound: [], failed: ['fb_1', 'fb_2'] });
+    });
   });
 
   describe('malformed request bodies', () => {
@@ -1261,6 +1304,26 @@ describe('createApiHandlers', () => {
       expect(res.status).toBe(200);
       const data = await res.json();
       expect(data).toHaveLength(1);
+    });
+
+    it('GET with an EMPTY status param (?status=) returns everything, not 400', async () => {
+      // A UI/bookmark that always appends ?status=${sel} with an empty default
+      // ("All" → '') must keep getting all rows, matching pre-validation behaviour.
+      await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'A' });
+
+      const res = await handlers.GET(makeRequest('http://localhost/api/feedback?status='));
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data).toHaveLength(1);
+    });
+
+    it('COUNT with an EMPTY status param (?status=) counts everything, not 400', async () => {
+      await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'A' });
+
+      const res = await handlers.COUNT(makeRequest('http://localhost/api/feedback/count?status='));
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.count).toBe(1);
     });
 
     it('COUNT with bogus status returns 400', async () => {
