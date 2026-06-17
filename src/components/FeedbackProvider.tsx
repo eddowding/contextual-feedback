@@ -1,7 +1,7 @@
 'use client';
 
-import { createContext, useContext, useState, useCallback, ReactNode } from 'react';
-import { FeedbackDialog } from './FeedbackDialog';
+import { createContext, useContext, useState, useCallback, useMemo, ReactNode } from 'react';
+import { FeedbackDialog, FeedbackDialogProps } from './FeedbackDialog';
 import { FeedbackHoverHandler } from './FeedbackHoverHandler';
 import { useUrlParamActivation } from '../lib/useUrlParamActivation';
 
@@ -42,8 +42,8 @@ export interface FeedbackProviderProps {
     elementId?: string;
     userEmail?: string;
   }) => Promise<void>;
-  /** Custom dialog component */
-  DialogComponent?: React.ComponentType;
+  /** Custom dialog component. Receives the provider's `apiEndpoint` and `onSubmit`. */
+  DialogComponent?: React.ComponentType<FeedbackDialogProps>;
   /** URL parameter name that activates feedback. When set, feedback UI only
    *  appears if ?{urlParam}=true is in the URL (persisted to sessionStorage). */
   urlParam?: string;
@@ -57,10 +57,8 @@ export interface FeedbackProviderProps {
 
 export function FeedbackProvider({
   children,
-  // apiEndpoint and onSubmit are part of the public prop API but consumed by child
-  // components / future wiring rather than the provider body. Prefixed to mark intentional.
-  apiEndpoint: _apiEndpoint = '/api/feedback',
-  onSubmit: _onSubmit,
+  apiEndpoint = '/api/feedback',
+  onSubmit,
   DialogComponent,
   urlParam,
   mode = 'targeted',
@@ -94,27 +92,46 @@ export function FeedbackProvider({
     setIsFeedbackMode(prev => !prev);
   }, []);
 
-  const Dialog = DialogComponent || FeedbackDialog;
+  // Memoize so parent-driven re-renders don't change the context identity and
+  // force every useFeedback() consumer to re-render. Callbacks are
+  // useCallback-stable, so this only changes when actual state/props change.
+  const value = useMemo<FeedbackContextType>(() => ({
+    isOpen,
+    isFeedbackMode,
+    isActivated,
+    mode,
+    collectEmail,
+    defaultEmail,
+    openDialog,
+    openFeedbackDialog,
+    closeDialog,
+    toggleFeedbackMode,
+    context,
+    elementId
+  }), [
+    isOpen,
+    isFeedbackMode,
+    isActivated,
+    mode,
+    collectEmail,
+    defaultEmail,
+    openDialog,
+    openFeedbackDialog,
+    closeDialog,
+    toggleFeedbackMode,
+    context,
+    elementId
+  ]);
 
   return (
-    <FeedbackContext.Provider
-      value={{
-        isOpen,
-        isFeedbackMode,
-        isActivated,
-        mode,
-        collectEmail,
-        defaultEmail,
-        openDialog,
-        openFeedbackDialog,
-        closeDialog,
-        toggleFeedbackMode,
-        context,
-        elementId
-      }}
-    >
+    <FeedbackContext.Provider value={value}>
       {children}
-      {isActivated && <Dialog />}
+      {isActivated && (() => {
+        // Resolve the component once so the prop list isn't duplicated across
+        // two branches (and a new prop only has to be added in one place).
+        const Dialog = DialogComponent ?? FeedbackDialog;
+        return <Dialog apiEndpoint={apiEndpoint} onSubmit={onSubmit} />;
+      })()}
       {isActivated && mode === 'targeted' && <FeedbackHoverHandler />}
     </FeedbackContext.Provider>
   );

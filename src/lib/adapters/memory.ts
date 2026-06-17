@@ -1,11 +1,4 @@
-import { Feedback, FeedbackAdapter, FeedbackInput, FeedbackStatus, FeedbackUpdate } from '../types';
-
-/** Compute resolvedAt based on status transition */
-function computeResolvedAt(status: FeedbackStatus | undefined): string | null | undefined {
-  if (status === 'Done' || status === 'Rejected') return new Date().toISOString();
-  if (status === 'Pending' || status === 'In Review') return null;
-  return undefined; // no status change
-}
+import { BulkUpdateResult, computeResolvedAt, Feedback, FeedbackAdapter, FeedbackInput, FeedbackStatus, FeedbackUpdate } from '../types';
 
 /**
  * In-memory adapter for development and testing
@@ -21,7 +14,7 @@ export function createMemoryAdapter(): FeedbackAdapter {
   const storage: Map<string, Feedback> = new Map();
 
   function applyUpdate(existing: Feedback, updates: FeedbackUpdate): Feedback {
-    const resolvedAt = computeResolvedAt(updates.status);
+    const resolvedAt = computeResolvedAt(updates.status, existing.resolvedAt);
     return {
       ...existing,
       ...(updates.status !== undefined ? { status: updates.status } : {}),
@@ -84,19 +77,20 @@ export function createMemoryAdapter(): FeedbackAdapter {
       return Array.from(storage.values()).filter(f => f.status === status).length;
     },
 
-    async bulkUpdate(updates: Array<{ id: string } & FeedbackUpdate>): Promise<Feedback[]> {
+    async bulkUpdate(updates: Array<{ id: string } & FeedbackUpdate>): Promise<BulkUpdateResult> {
       const results: Feedback[] = [];
 
       for (const { id, ...update } of updates) {
         const existing = storage.get(id);
-        if (!existing) continue;
+        if (!existing) continue; // missing row — caller diffs to find it
 
         const updated = applyUpdate(existing, update);
         storage.set(id, updated);
         results.push(updated);
       }
 
-      return results;
+      // The in-memory store never errors per item, so `failed` is always empty.
+      return { updated: results, failed: [] };
     }
   };
 }

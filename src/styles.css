@@ -9,27 +9,43 @@
    Section Highlighting (Feedback Mode)
    ============================================================================= */
 
-.cf-section-active {
-  outline: 3px solid rgba(59, 130, 246, 0.6) !important;
+/*
+ * Highlighting is driven by a body-level class (`cf-feedback-mode`) so that
+ * sections mounted while feedback mode is active are styled automatically.
+ * `.cf-section-active` is kept as an equivalent per-element hook.
+ */
+.cf-section-active,
+body.cf-feedback-mode [data-feedback-context] {
+  /* Solid colour, not alpha blue: this outline is the sole indicator that a
+     section is targetable, so it must meet the 3:1 non-text contrast minimum
+     (WCAG 1.4.11). #2563eb on white ≈ 5.2:1. */
+  outline: 3px solid #2563eb !important;
   outline-offset: 4px;
   border-radius: 6px;
   transition: all 0.2s ease;
   position: relative;
+  cursor: pointer;
 }
 
-.cf-section-active:hover {
-  outline-color: rgba(59, 130, 246, 0.9) !important;
+.cf-section-active:hover,
+.cf-section-active:focus-visible,
+body.cf-feedback-mode [data-feedback-context]:hover,
+body.cf-feedback-mode [data-feedback-context]:focus-visible {
+  outline-color: #1d4ed8 !important;
   outline-width: 4px;
   background: rgba(59, 130, 246, 0.02);
 }
 
-.cf-section-active::after {
+.cf-section-active::after,
+body.cf-feedback-mode [data-feedback-context]::after {
   content: 'Click to give feedback';
   position: absolute;
   top: -28px;
   left: 50%;
   transform: translateX(-50%);
-  background: rgba(59, 130, 246, 0.95);
+  /* Solid #1d4ed8 keeps the 12px white label above the 4.5:1 AA minimum
+     (WCAG 1.4.3); alpha-blue over arbitrary page content cannot guarantee it. */
+  background: #1d4ed8;
   color: white;
   padding: 4px 12px;
   border-radius: 6px;
@@ -41,8 +57,27 @@
   z-index: 1000;
 }
 
-.cf-section-active:hover::after {
+.cf-section-active:hover::after,
+.cf-section-active:focus-visible::after,
+body.cf-feedback-mode [data-feedback-context]:hover::after,
+body.cf-feedback-mode [data-feedback-context]:focus-visible::after {
   opacity: 1;
+}
+
+/* =============================================================================
+   Screen-reader-only content (live regions, announcements)
+   ============================================================================= */
+
+.cf-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* =============================================================================
@@ -54,7 +89,9 @@
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+  /* Gradient starts at #2563eb (white text ≈ 5.2:1) so the light end of the
+     gradient still passes WCAG 1.4.3 AA. */
+  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
   color: white;
   border: none;
   padding: 24px 40px;
@@ -88,7 +125,8 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  background: #3b82f6;
+  /* #2563eb: white 14px text ≈ 5.2:1 (#3b82f6 was 3.68:1, below AA). */
+  background: #2563eb;
   color: white;
   border: none;
   padding: 12px 16px;
@@ -103,16 +141,18 @@
 }
 
 .cf-floating-button:hover {
-  background: #2563eb;
+  background: #1d4ed8;
   transform: scale(1.05);
 }
 
 .cf-floating-button.cf-button-active {
-  background: #22c55e;
+  /* Dark green: white text ≈ 4.9:1 (#22c55e was 2.28:1, failing even the
+     large-text 3:1 threshold). */
+  background: #15803d;
 }
 
 .cf-floating-button.cf-button-active:hover {
-  background: #16a34a;
+  background: #166534;
 }
 
 /* Position variants */
@@ -202,7 +242,9 @@
   top: 16px;
   background: none;
   border: none;
-  color: #9ca3af;
+  /* #6b7280 ≈ 4.8:1 on white — the previous #9ca3af (2.54:1) failed WCAG
+     1.4.3/1.4.11. Applies to all former #9ca3af text/icon uses in this file. */
+  color: #6b7280;
   cursor: pointer;
   padding: 4px;
   border-radius: 4px;
@@ -273,9 +315,11 @@
 }
 
 .cf-context-select:focus {
-  outline: none;
-  border-color: #3b82f6;
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+  /* A real outline, not a 10%-alpha ring: focus indicators need 3:1 non-text
+     contrast (WCAG 2.4.7 / 1.4.11). #1d4ed8 on white ≈ 6.3:1. */
+  outline: 2px solid #1d4ed8;
+  outline-offset: 1px;
+  border-color: #2563eb;
 }
 
 .cf-context-edit {
@@ -315,9 +359,9 @@
 }
 
 .cf-input:focus {
-  outline: none;
-  border-color: #3b82f6;
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+  outline: 2px solid #1d4ed8;
+  outline-offset: 1px;
+  border-color: #2563eb;
 }
 
 .cf-input:disabled {
@@ -337,9 +381,9 @@
 }
 
 .cf-textarea:focus {
-  outline: none;
-  border-color: #3b82f6;
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+  outline: 2px solid #1d4ed8;
+  outline-offset: 1px;
+  border-color: #2563eb;
 }
 
 .cf-textarea:disabled {
@@ -358,7 +402,7 @@
 
 .cf-page-info {
   font-size: 12px;
-  color: #9ca3af;
+  color: #6b7280;
 }
 
 .cf-page-url {
@@ -391,13 +435,14 @@
 }
 
 .cf-btn-primary {
-  background: #3b82f6;
+  /* #2563eb: white 14px text ≈ 5.2:1 (#3b82f6 was 3.68:1, below AA). */
+  background: #2563eb;
   color: white;
   border: none;
 }
 
 .cf-btn-primary:hover:not(:disabled) {
-  background: #2563eb;
+  background: #1d4ed8;
 }
 
 .cf-btn-secondary {
@@ -408,6 +453,21 @@
 
 .cf-btn-secondary:hover:not(:disabled) {
   background: #f3f4f6;
+}
+
+/* Consistent visible focus indicator for all interactive controls
+   (WCAG 2.4.7 Focus Visible / 1.4.11 Non-text Contrast). */
+.cf-btn:focus-visible,
+.cf-floating-button:focus-visible,
+.cf-central-button:focus-visible,
+.cf-dialog-close:focus-visible,
+.cf-context-edit:focus-visible,
+.cf-list-copy-all:focus-visible,
+.cf-list-copy-btn:focus-visible,
+.cf-list-expand-btn:focus-visible,
+.cf-list-page-btn:focus-visible {
+  outline: 2px solid #1d4ed8;
+  outline-offset: 2px;
 }
 
 /* =============================================================================
@@ -430,6 +490,14 @@
   font-size: 14px;
   color: #6b7280;
   margin: 0;
+}
+
+.cf-success-close {
+  margin-top: 16px;
+}
+
+.cf-success:focus {
+  outline: none;
 }
 
 /* =============================================================================
@@ -581,8 +649,19 @@
   padding-right: 4px;
 }
 
+.cf-list-expand-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: inherit;
+  cursor: pointer;
+}
+
 .cf-list-chevron {
-  color: #9ca3af;
+  color: #6b7280;
   transition: transform 0.2s ease;
 }
 
@@ -627,7 +706,7 @@
 }
 
 .cf-list-context-general {
-  color: #9ca3af;
+  color: #6b7280;
   font-size: 12px;
 }
 
@@ -686,7 +765,7 @@
   padding: 4px;
   background: none;
   border: none;
-  color: #9ca3af;
+  color: #6b7280;
   cursor: pointer;
   border-radius: 4px;
   transition: color 0.2s ease;
@@ -739,7 +818,7 @@
   display: flex;
   gap: 16px;
   font-size: 12px;
-  color: #9ca3af;
+  color: #6b7280;
 }
 
 /* =============================================================================
@@ -793,4 +872,54 @@
 .cf-list-page-indicator {
   font-size: 13px;
   color: #6b7280;
+}
+
+/* =============================================================================
+   Reduced Motion
+   ============================================================================= */
+
+/*
+ * Honour the OS reduced-motion preference (WCAG 2.3.3 / EN 301 549 baseline).
+ * Selectors are scoped to cf- classes only — a library stylesheet must never
+ * blanket-disable transitions on the host app's elements.
+ * Spinners are slowed rather than frozen so loading state stays perceivable.
+ */
+@media (prefers-reduced-motion: reduce) {
+  [class^='cf-'],
+  [class*=' cf-'],
+  [class^='cf-']::after,
+  [class*=' cf-']::after,
+  body.cf-feedback-mode [data-feedback-context],
+  body.cf-feedback-mode [data-feedback-context]::after {
+    transition: none !important;
+  }
+
+  .cf-dialog-overlay,
+  .cf-dialog {
+    animation: none;
+  }
+
+  /* Remove the scale-on-hover effects, preserving each variant's positioning
+     transform. Order matters: the generic rule first, edge-tab variants after
+     so their rotation still wins at equal specificity. */
+  .cf-floating-button:hover {
+    transform: none;
+  }
+
+  .cf-central-button:hover {
+    transform: translate(-50%, -50%);
+  }
+
+  .cf-button-right:hover {
+    transform: translateY(-50%) rotate(-90deg);
+  }
+
+  .cf-button-left:hover {
+    transform: translateY(-50%) rotate(90deg);
+  }
+
+  .cf-spinner,
+  .cf-list-spinner {
+    animation-duration: 1.5s;
+  }
 }

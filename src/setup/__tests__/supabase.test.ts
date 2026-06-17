@@ -50,6 +50,23 @@ describe('SUPABASE_RLS_SQL', () => {
     expect(SUPABASE_RLS_SQL).toContain('FOR INSERT');
   });
 
+  it('insert policy binds user_email to the JWT identity (no forged attribution)', () => {
+    expect(SUPABASE_RLS_SQL).toContain("user_email = (SELECT auth.jwt() ->> 'email')");
+    expect(SUPABASE_RLS_SQL).not.toContain('WITH CHECK (true)');
+  });
+
+  it('lets authenticated users also submit anonymously', () => {
+    expect(SUPABASE_RLS_SQL).toContain("OR user_email = 'anonymous'");
+  });
+
+  it('allows anonymous (anon role) inserts, but only as the anonymous sentinel', () => {
+    // Without this, the library's public/anonymous POST submissions are
+    // silently rejected by RLS.
+    expect(SUPABASE_RLS_SQL).toContain('feedback_insert_anonymous');
+    expect(SUPABASE_RLS_SQL).toContain('TO anon');
+    expect(SUPABASE_RLS_SQL).toContain("WITH CHECK (user_email = 'anonymous')");
+  });
+
   it('creates select policy', () => {
     expect(SUPABASE_RLS_SQL).toContain('feedback_select_own');
     expect(SUPABASE_RLS_SQL).toContain('FOR SELECT');

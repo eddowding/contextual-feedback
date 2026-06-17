@@ -66,11 +66,18 @@ describe('useUrlParamActivation', () => {
     expect(result).toBe(false);
   });
 
-  it('returns true when sessionStorage already has activation', () => {
+  it('first render is false even when sessionStorage has activation (hydration safety)', () => {
+    // The server renders false (no storage); the first client render must
+    // match or React reports a hydration mismatch — activation happens in
+    // the effect, not in the useState initializer.
     sessionStore['cf-active-feedback'] = 'true';
     mockWindow.location.search = '';
     const result = useUrlParamActivation('feedback');
-    expect(result).toBe(true);
+    expect(result).toBe(false);
+    expect(mockSessionStorage.getItem).not.toHaveBeenCalled();
+
+    effectCb!();
+    expect(currentStateValue).toBe(true);
   });
 
   it('persists to sessionStorage when URL param detected', () => {
@@ -99,5 +106,28 @@ describe('useUrlParamActivation', () => {
     effectCb!();
 
     expect(currentStateValue).toBe(true);
+  });
+
+  it('does not crash when sessionStorage throws (blocked storage)', () => {
+    mockWindow.location.search = '?feedback=true';
+    mockSessionStorage.setItem.mockImplementationOnce(() => {
+      throw new Error('SecurityError: storage blocked');
+    });
+
+    useUrlParamActivation('feedback');
+    expect(() => effectCb!()).not.toThrow();
+    // Activation still works via the URL param alone.
+    expect(currentStateValue).toBe(true);
+  });
+
+  it('stays deactivated when storage throws and no URL param is present', () => {
+    mockWindow.location.search = '';
+    mockSessionStorage.getItem.mockImplementationOnce(() => {
+      throw new Error('SecurityError: storage blocked');
+    });
+
+    useUrlParamActivation('feedback');
+    expect(() => effectCb!()).not.toThrow();
+    expect(currentStateValue).toBe(false);
   });
 });

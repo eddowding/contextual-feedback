@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createApiHandlers } from '../handlers';
 import { createMemoryAdapter } from '../../lib/adapters/memory';
 import { FeedbackAdapter } from '../../lib/types';
@@ -136,6 +136,47 @@ describe('createApiHandlers', () => {
       const data = await res.json();
       expect(data.context).toBe('Pricing Table');
       expect(data.elementId).toBe('pricing');
+    });
+
+    it('returns 400 for context exceeding 255 chars (schema VARCHAR(255))', async () => {
+      const res = await handlers.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Bug',
+          pageUrl: '/page',
+          context: 'c'.repeat(256),
+        })
+      );
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain('255');
+    });
+
+    it('returns 400 for elementId exceeding 255 chars', async () => {
+      const res = await handlers.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Bug',
+          pageUrl: '/page',
+          elementId: 'e'.repeat(256),
+        })
+      );
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain('255');
+    });
+
+    it('accepts context and elementId at exactly 255 chars', async () => {
+      const res = await handlers.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Bug',
+          pageUrl: '/page',
+          context: 'c'.repeat(255),
+          elementId: 'e'.repeat(255),
+        })
+      );
+
+      expect(res.status).toBe(201);
     });
 
     it('accepts category', async () => {
@@ -375,6 +416,39 @@ describe('createApiHandlers', () => {
       );
       expect(res.status).toBe(400);
     });
+
+    it('returns 400 (not 500) for a null entry in resolutions', async () => {
+      const res = await handlers.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [null],
+        })
+      );
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toBe('Each resolution must be an object');
+    });
+
+    it('returns 400 for a string entry in resolutions', async () => {
+      const res = await handlers.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: ['fb_1'],
+        })
+      );
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toBe('Each resolution must be an object');
+    });
+
+    it('returns 400 for an array entry in resolutions', async () => {
+      const res = await handlers.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [[{ id: 'fb_1', status: 'Done' }]],
+        })
+      );
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toBe('Each resolution must be an object');
+    });
   });
 
   describe('authorize callback', () => {
@@ -527,6 +601,78 @@ describe('createApiHandlers', () => {
     });
   });
 
+  describe('anonymous submissions', () => {
+    it('accepts feedback with no email source when getUserEmail is not configured', async () => {
+      const h = createApiHandlers({ adapter });
+
+      const res = await h.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Anonymous bug report',
+          pageUrl: '/page',
+        })
+      );
+
+      expect(res.status).toBe(201);
+      const data = await res.json();
+      expect(data.userEmail).toBe('anonymous');
+    });
+
+    it('accepts feedback when getUserEmail returns null and no body email', async () => {
+      const h = createApiHandlers({
+        adapter,
+        getUserEmail: async () => null,
+      });
+
+      const res = await h.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Anonymous bug report',
+          pageUrl: '/page',
+          category: 'bug',
+        })
+      );
+
+      expect(res.status).toBe(201);
+      const data = await res.json();
+      expect(data.userEmail).toBe('anonymous');
+      expect(data.category).toBe('bug');
+    });
+
+    it('still rejects an invalid (non-anonymous) email', async () => {
+      const h = createApiHandlers({ adapter });
+
+      const res = await h.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Bug',
+          pageUrl: '/page',
+          userEmail: 'not-an-email',
+        })
+      );
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toBe('Invalid email format');
+    });
+
+    it('rejects a client that supplies the literal "anonymous" sentinel as its email', async () => {
+      // A client must not be able to masquerade as genuine-anonymous by sending
+      // userEmail: "anonymous" — that is a sourced value, so it is validated as
+      // an email and fails the format check rather than being stored silently.
+      const h = createApiHandlers({ adapter });
+
+      const res = await h.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Bug',
+          pageUrl: '/page',
+          userEmail: 'anonymous',
+        })
+      );
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toBe('Invalid email format');
+    });
+  });
+
   describe('trustClientEmail option', () => {
     it('prefers body userEmail when trustClientEmail=true (legacy behaviour)', async () => {
       const h = createApiHandlers({
@@ -632,6 +778,59 @@ describe('createApiHandlers', () => {
       expect(onSubmit).toHaveBeenCalledOnce();
       consoleSpy.mockRestore();
     });
+
+    it('does not affect response when onSubmit throws SYNCHRONOUSLY', async () => {
+      // Easy in untyped JS: a plain function that throws before returning a
+      // promise. The insert has already been persisted, so a 500 here would
+      // make the widget show an error and the user resubmit a duplicate.
+      const onSubmit = vi.fn(() => {
+        throw new Error('sync hook failure');
+      });
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const h = createApiHandlers({
+        adapter,
+        getUserEmail: async () => 'u@t.com',
+        onSubmit,
+      });
+
+      const res = await h.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Test',
+          pageUrl: '/page',
+        })
+      );
+
+      expect(res.status).toBe(201);
+      await new Promise(r => setTimeout(r, 0));
+      expect(onSubmit).toHaveBeenCalledOnce();
+      expect(consoleSpy).toHaveBeenCalled();
+      consoleSpy.mockRestore();
+    });
+
+    it('does not affect response when onSubmit returns a non-promise', async () => {
+      // A plain (non-async) JS hook returning undefined must not produce a
+      // TypeError from calling .catch on undefined.
+      const onSubmit = vi.fn(() => undefined);
+
+      const h = createApiHandlers({
+        adapter,
+        getUserEmail: async () => 'u@t.com',
+        // Untyped-JS consumers can pass a plain function — simulate that.
+        onSubmit: onSubmit as unknown as () => Promise<void>,
+      });
+
+      const res = await h.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Test',
+          pageUrl: '/page',
+        })
+      );
+
+      expect(res.status).toBe(201);
+      await new Promise(r => setTimeout(r, 0));
+      expect(onSubmit).toHaveBeenCalledOnce();
+    });
   });
 
   describe('onResolve hook', () => {
@@ -686,6 +885,923 @@ describe('createApiHandlers', () => {
       await new Promise(r => setTimeout(r, 0));
       expect(onResolve).toHaveBeenCalledOnce();
       consoleSpy.mockRestore();
+    });
+
+    it('does not affect response when onResolve throws SYNCHRONOUSLY', async () => {
+      const onResolve = vi.fn(() => {
+        throw new Error('sync hook failure');
+      });
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const h = createApiHandlers({
+        adapter,
+        getUserEmail: async () => 'u@t.com',
+        onResolve,
+      });
+
+      const fb = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'A' });
+
+      const res = await h.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [{ id: fb.id, status: 'Done' }],
+        })
+      );
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.updated).toHaveLength(1);
+      await new Promise(r => setTimeout(r, 0));
+      expect(onResolve).toHaveBeenCalledOnce();
+      expect(consoleSpy).toHaveBeenCalled();
+      consoleSpy.mockRestore();
+    });
+  });
+
+  describe('minimal adapter fallbacks (no getCount, no bulkUpdate)', () => {
+    function createMinimalAdapter(full: FeedbackAdapter): FeedbackAdapter {
+      return {
+        getAll: full.getAll,
+        getById: full.getById,
+        add: full.add,
+        update: full.update,
+      };
+    }
+
+    it('COUNT falls back to getAll().length when adapter.getCount is undefined', async () => {
+      const minimal = createMinimalAdapter(adapter);
+      const h = createApiHandlers({ adapter: minimal });
+
+      await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'A' });
+      await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'B' });
+
+      const res = await h.COUNT(makeRequest('http://localhost/api/feedback/count'));
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.count).toBe(2);
+    });
+
+    it('COUNT fallback respects the status filter', async () => {
+      const minimal = createMinimalAdapter(adapter);
+      const h = createApiHandlers({ adapter: minimal });
+
+      const fb = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'A' });
+      await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'B' });
+      await adapter.update(fb.id, { status: 'Done' });
+
+      const res = await h.COUNT(
+        makeRequest('http://localhost/api/feedback/count?status=Done')
+      );
+      const data = await res.json();
+      expect(data.count).toBe(1);
+    });
+
+    it('RESOLVE uses adapter.update per item when bulkUpdate is undefined', async () => {
+      const minimal = createMinimalAdapter(adapter);
+      const updateSpy = vi.fn(minimal.update);
+      minimal.update = updateSpy;
+      const h = createApiHandlers({ adapter: minimal });
+
+      const fb1 = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'A' });
+      const fb2 = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'B' });
+
+      const res = await h.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [
+            { id: fb1.id, status: 'Done', adminNotes: 'Fixed' },
+            { id: fb2.id, status: 'Rejected' },
+          ],
+        })
+      );
+
+      expect(res.status).toBe(200);
+      expect(updateSpy).toHaveBeenCalledTimes(2);
+      expect(updateSpy).toHaveBeenCalledWith(fb1.id, { status: 'Done', adminNotes: 'Fixed' });
+      expect(updateSpy).toHaveBeenCalledWith(fb2.id, { status: 'Rejected', adminNotes: undefined, category: undefined });
+
+      const data = await res.json();
+      expect(data.updated).toHaveLength(2);
+      expect(data.updated[0].status).toBe('Done');
+      expect(data.updated[1].status).toBe('Rejected');
+      expect(data.notFound).toEqual([]);
+    });
+
+    it('RESOLVE omits non-existent ids from updated on the fallback path', async () => {
+      const minimal = createMinimalAdapter(adapter);
+      const h = createApiHandlers({ adapter: minimal });
+
+      const fb = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'A' });
+
+      const res = await h.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [
+            { id: fb.id, status: 'Done' },
+            { id: 'does_not_exist', status: 'Done' },
+          ],
+        })
+      );
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.updated).toHaveLength(1);
+      expect(data.updated[0].id).toBe(fb.id);
+      expect(data.notFound).toEqual(['does_not_exist']);
+    });
+
+    it('RESOLVE continues past a per-item update error and reports it in failed', async () => {
+      const minimal = createMinimalAdapter(adapter);
+      const realUpdate = minimal.update;
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const fb1 = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'A' });
+      const fb2 = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'B' });
+
+      minimal.update = vi.fn(async (id, update) => {
+        if (id === fb1.id) throw new Error('db hiccup');
+        return realUpdate(id, update);
+      });
+      const h = createApiHandlers({ adapter: minimal });
+
+      const res = await h.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [
+            { id: fb1.id, status: 'Done' },
+            { id: fb2.id, status: 'Done' },
+          ],
+        })
+      );
+
+      // Partial success: fb_2 committed, so the response must report it as
+      // updated (200), with the errored id in `failed` — NOT in `notFound`,
+      // which is reserved for rows that no longer exist.
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.updated).toHaveLength(1);
+      expect(data.updated[0].id).toBe(fb2.id);
+      expect(data.failed).toEqual([fb1.id]);
+      expect(data.notFound).toEqual([]);
+
+      consoleSpy.mockRestore();
+    });
+
+    it('onResolve fires for items resolved via the update fallback path', async () => {
+      const minimal = createMinimalAdapter(adapter);
+      const onResolve = vi.fn().mockResolvedValue(undefined);
+      const h = createApiHandlers({ adapter: minimal, onResolve });
+
+      const fb = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'A' });
+
+      const res = await h.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [
+            { id: fb.id, status: 'Done', adminNotes: 'Shipped' },
+            { id: 'missing', status: 'Done' },
+          ],
+        })
+      );
+
+      expect(res.status).toBe(200);
+      await new Promise(r => setTimeout(r, 0));
+      expect(onResolve).toHaveBeenCalledOnce();
+      expect(onResolve.mock.calls[0][0].id).toBe(fb.id);
+      expect(onResolve.mock.calls[0][1].status).toBe('Done');
+      expect(onResolve.mock.calls[0][1].adminNotes).toBe('Shipped');
+    });
+  });
+
+  describe('handler error paths (failing adapter)', () => {
+    let failingHandlers: ReturnType<typeof createApiHandlers>;
+    let consoleSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      const fail = () => Promise.reject(new Error('db down'));
+      const failingAdapter: FeedbackAdapter = {
+        getAll: fail,
+        getById: fail,
+        add: fail,
+        update: fail,
+      };
+      failingHandlers = createApiHandlers({
+        adapter: failingAdapter,
+        getUserEmail: async () => 'u@t.com',
+      });
+      consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      consoleSpy.mockRestore();
+    });
+
+    it('GET returns 500 with JSON error body', async () => {
+      const res = await failingHandlers.GET(makeRequest('http://localhost/api/feedback'));
+      expect(res.status).toBe(500);
+      const data = await res.json();
+      expect(data).toEqual({ error: 'Failed to fetch feedback' });
+    });
+
+    it('POST returns 500 with JSON error body', async () => {
+      const res = await failingHandlers.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Test',
+          pageUrl: '/page',
+        })
+      );
+      expect(res.status).toBe(500);
+      const data = await res.json();
+      expect(data).toEqual({ error: 'Failed to submit feedback' });
+    });
+
+    it('PATCH returns 500 with JSON error body', async () => {
+      const res = await failingHandlers.PATCH(
+        jsonRequest('http://localhost/api/feedback/fb_1', { status: 'Done' }),
+        'fb_1'
+      );
+      expect(res.status).toBe(500);
+      const data = await res.json();
+      expect(data).toEqual({ error: 'Failed to update feedback' });
+    });
+
+    it('COUNT returns 500 with error and count 0', async () => {
+      const res = await failingHandlers.COUNT(
+        makeRequest('http://localhost/api/feedback/count')
+      );
+      expect(res.status).toBe(500);
+      const data = await res.json();
+      expect(data).toEqual({ error: 'Failed to get count', count: 0 });
+    });
+
+    it('TRIAGE returns 500 with JSON error body', async () => {
+      const res = await failingHandlers.TRIAGE(
+        makeRequest('http://localhost/api/feedback/triage')
+      );
+      expect(res.status).toBe(500);
+      const data = await res.json();
+      expect(data).toEqual({ error: 'Failed to fetch triage data' });
+    });
+
+    it('RESOLVE returns 500 with failed ids when every update errors (fallback path)', async () => {
+      // A total failure (db down) must NOT look like an all-items-missing
+      // success: an agent told the ids are notFound would drop them. The
+      // errored ids are reported in `failed`, and since nothing succeeded the
+      // status is 500 so the caller knows to retry the whole batch.
+      const res = await failingHandlers.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [{ id: 'fb_1', status: 'Done' }],
+        })
+      );
+      expect(res.status).toBe(500);
+      const data = await res.json();
+      expect(data).toEqual({ updated: [], notFound: [], failed: ['fb_1'] });
+    });
+
+    it('RESOLVE outer-catch (atomic adapter throws) still returns a ResolveResponse shape, not {error}', async () => {
+      // An atomic bulkUpdate that throws (e.g. postgres ROLLBACK rethrow) hits
+      // the handler's catch-all. It must keep the {updated, notFound, failed}
+      // contract — every parsed id in `failed` — so a typed client can retry
+      // instead of choking on a {error}-shaped body.
+      const throwingAdapter: FeedbackAdapter = {
+        getAll: () => Promise.reject(new Error('db down')),
+        getById: () => Promise.reject(new Error('db down')),
+        add: () => Promise.reject(new Error('db down')),
+        update: () => Promise.reject(new Error('db down')),
+        bulkUpdate: () => Promise.reject(new Error('transaction rolled back')),
+      };
+      const h = createApiHandlers({ adapter: throwingAdapter, getUserEmail: async () => 'u@t.com' });
+
+      const res = await h.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [{ id: 'fb_1', status: 'Done' }, { id: 'fb_2', status: 'Rejected' }],
+        })
+      );
+      expect(res.status).toBe(500);
+      const data = await res.json();
+      expect(data).toEqual({ updated: [], notFound: [], failed: ['fb_1', 'fb_2'] });
+    });
+  });
+
+  describe('malformed request bodies', () => {
+    function rawJsonRequest(url: string, raw: string): Request {
+      return new Request(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: raw,
+      });
+    }
+
+    it('POST returns 400 for invalid JSON', async () => {
+      const res = await handlers.POST(rawJsonRequest('http://localhost/api/feedback', 'not json'));
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toBe('Invalid JSON body');
+    });
+
+    it('PATCH returns 400 for invalid JSON', async () => {
+      const res = await handlers.PATCH(
+        rawJsonRequest('http://localhost/api/feedback/fb_1', 'not json'),
+        'fb_1'
+      );
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toBe('Invalid JSON body');
+    });
+
+    it('RESOLVE returns 400 for invalid JSON', async () => {
+      const res = await handlers.RESOLVE(
+        rawJsonRequest('http://localhost/api/feedback/resolve', 'not json')
+      );
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toBe('Invalid JSON body');
+    });
+
+    it('POST returns 400 for empty body', async () => {
+      const res = await handlers.POST(rawJsonRequest('http://localhost/api/feedback', ''));
+      expect(res.status).toBe(400);
+    });
+
+    it('POST returns 400 for a JSON scalar body', async () => {
+      const res = await handlers.POST(rawJsonRequest('http://localhost/api/feedback', 'null'));
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toBe('Request body must be a JSON object');
+    });
+
+    it('POST returns 400 for a JSON array body', async () => {
+      const res = await handlers.POST(rawJsonRequest('http://localhost/api/feedback', '[]'));
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toBe('Request body must be a JSON object');
+    });
+  });
+
+  describe('content type enforcement (CSRF defence)', () => {
+    it('POST returns 415 for text/plain (cross-site form trick)', async () => {
+      const res = await handlers.POST(
+        new Request('http://localhost/api/feedback', {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain' },
+          body: JSON.stringify({ feedbackText: 'Test', pageUrl: '/page' }),
+        })
+      );
+      expect(res.status).toBe(415);
+      const data = await res.json();
+      expect(data.error).toBe('Content-Type must be application/json');
+    });
+
+    it('PATCH returns 415 for urlencoded content type', async () => {
+      const res = await handlers.PATCH(
+        new Request('http://localhost/api/feedback/fb_1', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: JSON.stringify({ status: 'Done' }),
+        }),
+        'fb_1'
+      );
+      expect(res.status).toBe(415);
+    });
+
+    it('RESOLVE returns 415 for text/plain content type', async () => {
+      const res = await handlers.RESOLVE(
+        new Request('http://localhost/api/feedback/resolve', {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain' },
+          body: JSON.stringify({ resolutions: [{ id: 'fb_1', status: 'Done' }] }),
+        })
+      );
+      expect(res.status).toBe(415);
+    });
+
+    it('POST accepts application/json with a charset parameter', async () => {
+      const res = await handlers.POST(
+        new Request('http://localhost/api/feedback', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json; charset=utf-8' },
+          body: JSON.stringify({ feedbackText: 'Test', pageUrl: '/page' }),
+        })
+      );
+      expect(res.status).toBe(201);
+    });
+  });
+
+  describe('status query param validation', () => {
+    it('GET with bogus status returns 400', async () => {
+      await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'A' });
+
+      const res = await handlers.GET(makeRequest('http://localhost/api/feedback?status=Bogus'));
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain('Invalid status value');
+    });
+
+    it('GET with wrong-case status returns 400', async () => {
+      const res = await handlers.GET(makeRequest('http://localhost/api/feedback?status=pending'));
+      expect(res.status).toBe(400);
+    });
+
+    it('GET without status param returns everything', async () => {
+      await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'A' });
+
+      const res = await handlers.GET(makeRequest('http://localhost/api/feedback'));
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data).toHaveLength(1);
+    });
+
+    it('GET with an EMPTY status param (?status=) returns everything, not 400', async () => {
+      // A UI/bookmark that always appends ?status=${sel} with an empty default
+      // ("All" → '') must keep getting all rows, matching pre-validation behaviour.
+      await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'A' });
+
+      const res = await handlers.GET(makeRequest('http://localhost/api/feedback?status='));
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data).toHaveLength(1);
+    });
+
+    it('COUNT with an EMPTY status param (?status=) counts everything, not 400', async () => {
+      await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'A' });
+
+      const res = await handlers.COUNT(makeRequest('http://localhost/api/feedback/count?status='));
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.count).toBe(1);
+    });
+
+    it('COUNT with bogus status returns 400', async () => {
+      await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'A' });
+
+      const res = await handlers.COUNT(
+        makeRequest('http://localhost/api/feedback/count?status=Bogus')
+      );
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain('Invalid status value');
+    });
+
+    it('COUNT with a valid status still filters', async () => {
+      await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'A' });
+
+      const res = await handlers.COUNT(
+        makeRequest('http://localhost/api/feedback/count?status=Pending')
+      );
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.count).toBe(1);
+    });
+  });
+
+  describe('falsy and non-string status values in PATCH/RESOLVE', () => {
+    it('PATCH returns 400 for empty-string status', async () => {
+      const fb = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'Test' });
+
+      const res = await handlers.PATCH(
+        jsonRequest(`http://localhost/api/feedback/${fb.id}`, { status: '' }),
+        fb.id
+      );
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toBe('Invalid status value');
+
+      // Status must not have been corrupted
+      const stored = await adapter.getById(fb.id);
+      expect(stored?.status).toBe('Pending');
+    });
+
+    it('PATCH returns 400 for null status', async () => {
+      const fb = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'Test' });
+
+      const res = await handlers.PATCH(
+        jsonRequest(`http://localhost/api/feedback/${fb.id}`, { status: null }),
+        fb.id
+      );
+      expect(res.status).toBe(400);
+
+      const stored = await adapter.getById(fb.id);
+      expect(stored?.status).toBe('Pending');
+    });
+
+    it('PATCH returns 400 for a numeric status', async () => {
+      const fb = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'Test' });
+
+      const res = await handlers.PATCH(
+        jsonRequest(`http://localhost/api/feedback/${fb.id}`, { status: 42 }),
+        fb.id
+      );
+      expect(res.status).toBe(400);
+    });
+
+    it('RESOLVE returns 400 for empty-string status in a resolution', async () => {
+      const fb = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'Test' });
+
+      const res = await handlers.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [{ id: fb.id, status: '' }],
+        })
+      );
+      expect(res.status).toBe(400);
+
+      const stored = await adapter.getById(fb.id);
+      expect(stored?.status).toBe('Pending');
+    });
+
+    it('RESOLVE returns 400 for null status in a resolution', async () => {
+      const fb = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'Test' });
+
+      const res = await handlers.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [{ id: fb.id, status: null }],
+        })
+      );
+      expect(res.status).toBe(400);
+    });
+  });
+
+  describe('non-string POST body fields', () => {
+    it('returns 400 when feedbackText is a number', async () => {
+      const res = await handlers.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 123,
+          pageUrl: '/page',
+        })
+      );
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toBe('feedbackText must be a string');
+    });
+
+    it('returns 400 when pageUrl is a boolean', async () => {
+      const res = await handlers.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Test',
+          pageUrl: true,
+        })
+      );
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toBe('pageUrl must be a string');
+    });
+
+    it('returns 400 when userEmail is an object', async () => {
+      const res = await handlers.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Test',
+          pageUrl: '/page',
+          userEmail: { evil: true },
+        })
+      );
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toBe('userEmail must be a string');
+    });
+
+    it('returns 400 when context is a number', async () => {
+      const res = await handlers.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Test',
+          pageUrl: '/page',
+          context: 99,
+        })
+      );
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toBe('context must be a string');
+    });
+
+    it('returns 400 when category is a number', async () => {
+      const res = await handlers.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Test',
+          pageUrl: '/page',
+          category: 7,
+        })
+      );
+      expect(res.status).toBe(400);
+    });
+  });
+
+  describe('explicit null for optional POST body fields', () => {
+    // Non-JS clients (Python/Go/Java serializers, ORMs) emit explicit `null`
+    // for absent optional fields, and 0.1.0 accepted that. null means
+    // "absent", not "invalid".
+    it('accepts null context and elementId, storing the row without them', async () => {
+      const res = await handlers.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Test',
+          pageUrl: '/page',
+          context: null,
+          elementId: null,
+        })
+      );
+
+      expect(res.status).toBe(201);
+      const data = await res.json();
+      expect(data.context).toBeUndefined();
+      expect(data.elementId).toBeUndefined();
+    });
+
+    it('treats null userEmail as absent (anonymous flow), not a type error', async () => {
+      const h = createApiHandlers({ adapter }); // no getUserEmail configured
+
+      const res = await h.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Test',
+          pageUrl: '/page',
+          userEmail: null,
+        })
+      );
+
+      expect(res.status).toBe(201);
+      const data = await res.json();
+      expect(data.userEmail).toBe('anonymous');
+    });
+
+    it('still rejects null feedbackText and pageUrl', async () => {
+      const res1 = await handlers.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: null,
+          pageUrl: '/page',
+        })
+      );
+      expect(res1.status).toBe(400);
+
+      const res2 = await handlers.POST(
+        jsonRequest('http://localhost/api/feedback', {
+          feedbackText: 'Test',
+          pageUrl: null,
+        })
+      );
+      expect(res2.status).toBe(400);
+    });
+  });
+
+  describe('PATCH race with deletion (TOCTOU)', () => {
+    it('returns 404 (not 200 with null body) when update finds no row', async () => {
+      // Simulate the row vanishing between request receipt and the update —
+      // the handler must rely on the update result, not a getById pre-check.
+      const fb = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'Test' });
+      const racyAdapter: FeedbackAdapter = {
+        ...adapter,
+        update: async () => null,
+      };
+      const h = createApiHandlers({ adapter: racyAdapter });
+
+      const res = await h.PATCH(
+        jsonRequest(`http://localhost/api/feedback/${fb.id}`, { status: 'Done' }),
+        fb.id
+      );
+      expect(res.status).toBe(404);
+      const data = await res.json();
+      expect(data.error).toBe('Feedback not found');
+    });
+  });
+
+  describe('RESOLVE notFound reporting', () => {
+    it('lists requested ids that were not updated', async () => {
+      const fb = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'A' });
+
+      const res = await handlers.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [
+            { id: fb.id, status: 'Done' },
+            { id: 'missing_1', status: 'Done' },
+            { id: 'missing_2', status: 'Rejected' },
+          ],
+        })
+      );
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.updated).toHaveLength(1);
+      expect(data.updated[0].id).toBe(fb.id);
+      expect(data.notFound).toEqual(['missing_1', 'missing_2']);
+    });
+
+    it('returns an empty notFound array when all ids exist', async () => {
+      const fb = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'A' });
+
+      const res = await handlers.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [{ id: fb.id, status: 'Done' }],
+        })
+      );
+
+      const data = await res.json();
+      expect(data.updated).toHaveLength(1);
+      expect(data.notFound).toEqual([]);
+    });
+
+    it('reports a fully-stale batch as all notFound', async () => {
+      const res = await handlers.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [{ id: 'gone', status: 'Done' }],
+        })
+      );
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.updated).toEqual([]);
+      expect(data.notFound).toEqual(['gone']);
+    });
+
+    it('reports notFound when the adapter has no bulkUpdate (per-item fallback)', async () => {
+      const fb = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'A' });
+      const noBulkAdapter: FeedbackAdapter = {
+        getAll: adapter.getAll,
+        getById: adapter.getById,
+        add: adapter.add,
+        update: adapter.update,
+      };
+      const h = createApiHandlers({ adapter: noBulkAdapter });
+
+      const res = await h.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [
+            { id: fb.id, status: 'Done' },
+            { id: 'missing', status: 'Done' },
+          ],
+        })
+      );
+
+      const data = await res.json();
+      expect(data.updated).toHaveLength(1);
+      expect(data.notFound).toEqual(['missing']);
+      expect(data.failed).toEqual([]);
+    });
+  });
+
+  describe('RESOLVE failed reporting (adapter bulkUpdate returning BulkUpdateResult)', () => {
+    // Adapters without transactions (supabase/PostgREST) report per-item
+    // errors via the rich BulkUpdateResult shape. The handler must surface
+    // those as `failed` (retry later), not `notFound` (row gone).
+    function adapterWithRichBulkUpdate(
+      base: FeedbackAdapter,
+      result: Awaited<ReturnType<NonNullable<FeedbackAdapter['bulkUpdate']>>>
+    ): FeedbackAdapter {
+      return { ...base, bulkUpdate: async () => result };
+    }
+
+    it('reports errored ids in failed, not notFound (partial success → 200)', async () => {
+      const fb = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'A' });
+      const updatedFb = { ...fb, status: 'Done' as const };
+      const h = createApiHandlers({
+        adapter: adapterWithRichBulkUpdate(adapter, {
+          updated: [updatedFb],
+          failed: [{ id: 'fb_broken', error: 'permission denied' }],
+        }),
+      });
+
+      const res = await h.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [
+            { id: fb.id, status: 'Done' },
+            { id: 'fb_broken', status: 'Done' },
+            { id: 'fb_gone', status: 'Done' },
+          ],
+        })
+      );
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.updated).toHaveLength(1);
+      expect(data.failed).toEqual(['fb_broken']);
+      expect(data.notFound).toEqual(['fb_gone']);
+    });
+
+    it('returns 500 when nothing was updated and at least one update errored', async () => {
+      // A db outage / expired credentials / RLS misconfiguration must not be
+      // reported as a 200 with every id in notFound — agents following the
+      // README would treat the items as deleted and drop them.
+      const h = createApiHandlers({
+        adapter: adapterWithRichBulkUpdate(adapter, {
+          updated: [],
+          failed: [
+            { id: 'fb_1', error: 'db down' },
+            { id: 'fb_2', error: 'db down' },
+          ],
+        }),
+      });
+
+      const res = await h.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [
+            { id: 'fb_1', status: 'Done' },
+            { id: 'fb_2', status: 'Done' },
+          ],
+        })
+      );
+
+      expect(res.status).toBe(500);
+      const data = await res.json();
+      expect(data).toEqual({ updated: [], notFound: [], failed: ['fb_1', 'fb_2'] });
+    });
+
+    it('still returns 200 when an all-notFound batch has no errors', async () => {
+      // Genuinely-missing rows with zero errors remain a success: the agent
+      // can safely drop those ids.
+      const h = createApiHandlers({
+        adapter: adapterWithRichBulkUpdate(adapter, { updated: [], failed: [] }),
+      });
+
+      const res = await h.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [{ id: 'gone', status: 'Done' }],
+        })
+      );
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data).toEqual({ updated: [], notFound: ['gone'], failed: [] });
+    });
+  });
+
+  describe('category and adminNotes validation in PATCH/RESOLVE', () => {
+    it('PATCH returns 400 for invalid category', async () => {
+      const fb = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'Test' });
+
+      const res = await handlers.PATCH(
+        jsonRequest(`http://localhost/api/feedback/${fb.id}`, { category: 'junk' }),
+        fb.id
+      );
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain('Invalid category');
+    });
+
+    it('RESOLVE returns 400 for invalid category in a resolution', async () => {
+      const fb = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'Test' });
+
+      const res = await handlers.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [{ id: fb.id, status: 'Done', category: 'junk' }],
+        })
+      );
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain('Invalid category');
+    });
+
+    it('RESOLVE accepts a valid category', async () => {
+      const fb = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'Test' });
+
+      const res = await handlers.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [{ id: fb.id, status: 'Done', category: 'bug' }],
+        })
+      );
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.updated[0].category).toBe('bug');
+    });
+
+    it('PATCH returns 400 for adminNotes over 5000 characters', async () => {
+      const fb = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'Test' });
+
+      const res = await handlers.PATCH(
+        jsonRequest(`http://localhost/api/feedback/${fb.id}`, { adminNotes: 'x'.repeat(5001) }),
+        fb.id
+      );
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain('5000 characters or less');
+    });
+
+    it('PATCH returns 400 for non-string adminNotes', async () => {
+      const fb = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'Test' });
+
+      const res = await handlers.PATCH(
+        jsonRequest(`http://localhost/api/feedback/${fb.id}`, { adminNotes: 42 }),
+        fb.id
+      );
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toBe('adminNotes must be a string');
+    });
+
+    it('RESOLVE returns 400 for adminNotes over 5000 characters, identifying the item', async () => {
+      const fb = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'Test' });
+
+      const res = await handlers.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [{ id: fb.id, status: 'Done', adminNotes: 'x'.repeat(5001) }],
+        })
+      );
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain('5000 characters or less');
+      // Batch errors must say WHICH resolution failed, like the status/category errors.
+      expect(data.error).toContain(`for id "${fb.id}"`);
+    });
+
+    it('RESOLVE returns 400 for non-string adminNotes, identifying the item', async () => {
+      const fb = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'Test' });
+
+      const res = await handlers.RESOLVE(
+        jsonRequest('http://localhost/api/feedback/resolve', {
+          resolutions: [{ id: fb.id, status: 'Done', adminNotes: 42 }],
+        })
+      );
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toBe(`adminNotes must be a string for id "${fb.id}"`);
     });
   });
 });

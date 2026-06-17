@@ -1,8 +1,122 @@
-import { Feedback, FeedbackAdapter, FeedbackStatus, FeedbackUpdate, validateFeedbackInput } from '../lib/types';
+import { Feedback, FeedbackAdapter, FeedbackCategory, FeedbackInput, FeedbackStatus, FeedbackUpdate, VALID_CATEGORIES, VALID_STATUSES, validateFeedbackInput } from '../lib/types';
+
+/**
+ * Invoke a fire-and-forget hook so that NOTHING it does can affect the HTTP
+ * response: a rejected promise, a synchronous throw, or a plain (non-promise)
+ * return — easy in untyped JS — are all absorbed and logged.
+ */
+function fireAndForget(run: () => unknown): void {
+  Promise.resolve()
+    .then(() => run())
+    .catch(console.error);
+}
+import { toTriageItem } from '../lib/ai';
+
+const MAX_ADMIN_NOTES_LENGTH = 5000;
+
+function jsonResponse(body: unknown, status: number): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+/**
+ * Parse and validate a JSON request body for state-changing endpoints (POST/PATCH/RESOLVE).
+ *
+ * - Rejects non-JSON content types with 415. This doubles as CSRF protection when
+ *   `authorize` is cookie-based: a cross-site HTML form can only submit
+ *   text/plain, multipart or urlencoded bodies without triggering a CORS preflight,
+ *   so requiring `application/json` blocks form-based forgery.
+ * - Rejects malformed JSON and non-object bodies with 400 — these are client errors,
+ *   not server failures, so they must not surface as 500s.
+ */
+async function parseJsonBody(
+  request: Request
+): Promise<{ body: Record<string, unknown>; errorResponse?: undefined } | { body?: undefined; errorResponse: Response }> {
+  const contentType = request.headers.get('content-type') || '';
+  if (!contentType.toLowerCase().includes('application/json')) {
+    return { errorResponse: jsonResponse({ error: 'Content-Type must be application/json' }, 415) };
+  }
+
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return { errorResponse: jsonResponse({ error: 'Invalid JSON body' }, 400) };
+  }
+
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return { errorResponse: jsonResponse({ error: 'Request body must be a JSON object' }, 400) };
+  }
+
+  return { body: body as Record<string, unknown> };
+}
+
+/**
+ * Return a 400 Response when any of the named body fields is present but not a string
+ * (numbers, booleans, nulls, objects). Guards the `.trim()` calls downstream so a
+ * malformed body surfaces as a 400 validation error rather than a TypeError → 500.
+ */
+function validateStringFields(body: Record<string, unknown>, fields: string[]): Response | null {
+  for (const field of fields) {
+    const value = body[field];
+    if (value !== undefined && typeof value !== 'string') {
+      return jsonResponse({ error: `${field} must be a string` }, 400);
+    }
+  }
+  return null;
+}
+
+/**
+ * Parse and validate the optional `status` query param (GET/COUNT). Returns a 400
+ * Response for unknown values instead of silently returning an empty result set.
+ */
+function parseStatusParam(
+  url: URL
+): { status: FeedbackStatus | undefined; errorResponse?: undefined } | { status?: undefined; errorResponse: Response } {
+  const raw = url.searchParams.get('status');
+  // Absent OR present-but-empty (`?status=`) means "no filter" — a client/UI
+  // that always appends the param with an empty default ("All" → '') must keep
+  // getting all rows, not a 400. Only a non-empty unknown value is rejected.
+  if (raw === null || raw === '') return { status: undefined };
+  if (!VALID_STATUSES.includes(raw as FeedbackStatus)) {
+    return {
+      errorResponse: jsonResponse(
+        { error: `Invalid status value. Must be one of: ${VALID_STATUSES.join(', ')}` },
+        400
+      ),
+    };
+  }
+  return { status: raw as FeedbackStatus };
+}
+
+/** Validate an optional `adminNotes` field. Returns a 400 Response on failure, null when ok.
+ *  Pass `forId` in batch contexts (RESOLVE) so the error identifies the offending item,
+ *  matching the neighbouring status/category error formats. */
+function validateAdminNotes(adminNotes: unknown, context: { forId?: string } = {}): Response | null {
+  const suffix = context.forId !== undefined ? ` for id "${context.forId}"` : '';
+  if (adminNotes !== undefined && typeof adminNotes !== 'string') {
+    return jsonResponse({ error: `adminNotes must be a string${suffix}` }, 400);
+  }
+  if (typeof adminNotes === 'string' && adminNotes.length > MAX_ADMIN_NOTES_LENGTH) {
+    return jsonResponse(
+      { error: `Admin notes must be ${MAX_ADMIN_NOTES_LENGTH} characters or less${suffix}` },
+      400
+    );
+  }
+  return null;
+}
 
 export interface ApiConfig {
   adapter: FeedbackAdapter;
-  /** Function to get current user email from request */
+  /** Function to get current user email from request. This is the TRUSTED identity
+   *  source: with the default `trustClientEmail: false` its result overrides any
+   *  client-supplied body email, so it MUST return a verified identity (e.g. from a
+   *  server-side session via Supabase `auth.getUser()` or NextAuth `getServerSession`).
+   *  Never derive it from a request header the client can set (like `x-user-email`) —
+   *  that would let any caller forge attribution. Return null when there is no
+   *  authenticated user. */
   getUserEmail?: (request: Request) => Promise<string | null>;
   /** Optional authorization callback. When provided it gates every read/admin endpoint
    *  (GET, COUNT, PATCH, TRIAGE, RESOLVE) — GET/COUNT can leak feedback (incl. emails) to
@@ -59,9 +173,10 @@ export function createApiHandlers(config: ApiConfig) {
         if (authResponse) return authResponse;
 
         const url = new URL(request.url);
-        const status = url.searchParams.get('status') as FeedbackStatus | null;
+        const statusParam = parseStatusParam(url);
+        if (statusParam.errorResponse) return statusParam.errorResponse;
 
-        const feedback = await adapter.getAll(status || undefined);
+        const feedback = await adapter.getAll(statusParam.status);
 
         return new Response(JSON.stringify(feedback), {
           status: 200,
@@ -82,21 +197,51 @@ export function createApiHandlers(config: ApiConfig) {
      */
     async POST(request: Request): Promise<Response> {
       try {
-        const body = await request.json();
-        const { feedbackText, pageUrl, context, elementId, category, userEmail: bodyEmail } = body;
+        const parsed = await parseJsonBody(request);
+        if (parsed.errorResponse) return parsed.errorResponse;
+
+        // Explicit `null` for an OPTIONAL field means "absent" — many non-JS
+        // serializers (Python/Go/Java, ORMs) emit null for missing optionals,
+        // and 0.1.0 accepted it. Normalise before type-checking so it isn't
+        // rejected as a wrong type. feedbackText/pageUrl stay strict: null was
+        // already a 400 for those.
+        for (const field of ['context', 'elementId', 'userEmail']) {
+          if (parsed.body[field] === null) delete parsed.body[field];
+        }
+
+        const stringFieldError = validateStringFields(parsed.body, [
+          'feedbackText', 'pageUrl', 'context', 'elementId', 'userEmail',
+        ]);
+        if (stringFieldError) return stringFieldError;
+
+        const { feedbackText, pageUrl, context, elementId, category, userEmail: bodyEmail } =
+          parsed.body as Partial<FeedbackInput>;
 
         // Resolve the submitter's email. A client-supplied body email is spoofable, so by
         // default the server-derived email (getUserEmail) takes precedence. Only when
         // `trustClientEmail` is true does the client body email win (legacy behaviour).
         const serverEmail = getUserEmail ? await getUserEmail(request) : null;
-        const userEmail = trustClientEmail
-          ? (bodyEmail?.trim() || serverEmail || 'anonymous')
-          : (serverEmail || bodyEmail?.trim() || 'anonymous');
+        const trimmedBodyEmail = bodyEmail?.trim() || null;
+        // The email that actually came from a source (server identity or client
+        // body). `null` means no source at all → genuinely anonymous.
+        const sourcedEmail = trustClientEmail
+          ? (trimmedBodyEmail || serverEmail)
+          : (serverEmail || trimmedBodyEmail);
+        const userEmail = sourcedEmail ?? 'anonymous';
 
+        // Full (non-partial) validation: missing/empty feedbackText and pageUrl
+        // are rejected here, so no duplicated required-field checks are needed.
         const validationErrors = validateFeedbackInput({
           feedbackText,
           pageUrl,
-          userEmail,
+          context,
+          elementId,
+          // Validate the email format whenever it came from an actual source.
+          // The 'anonymous' sentinel is assigned ONLY when there is no source, so
+          // a client can no longer be stored as anonymous by sending the literal
+          // string "anonymous" — that is a sourced value and fails the format
+          // check (400) instead of silently masquerading as genuine-anonymous.
+          ...(sourcedEmail !== null ? { userEmail: sourcedEmail } : {}),
           category,
         });
 
@@ -107,31 +252,20 @@ export function createApiHandlers(config: ApiConfig) {
           );
         }
 
-        if (!feedbackText || !feedbackText.trim()) {
-          return new Response(
-            JSON.stringify({ error: 'Feedback text is required' }),
-            { status: 400, headers: { 'Content-Type': 'application/json' } }
-          );
-        }
-
-        if (!pageUrl) {
-          return new Response(
-            JSON.stringify({ error: 'Page URL is required' }),
-            { status: 400, headers: { 'Content-Type': 'application/json' } }
-          );
-        }
-
         const feedback = await adapter.add({
           userEmail: userEmail.trim(),
-          pageUrl: pageUrl.trim(),
-          feedbackText: feedbackText.trim(),
+          // Validation guarantees both are present non-empty strings; the ?? ''
+          // only narrows the Partial<> types for the compiler.
+          pageUrl: (pageUrl ?? '').trim(),
+          feedbackText: (feedbackText ?? '').trim(),
           context: context?.trim() || undefined,
           elementId: elementId?.trim() || undefined,
           category: category || undefined,
         });
 
         if (config.onSubmit) {
-          config.onSubmit(feedback).catch(console.error);
+          const { onSubmit } = config;
+          fireAndForget(() => onSubmit(feedback));
         }
 
         return new Response(JSON.stringify(feedback), {
@@ -156,8 +290,13 @@ export function createApiHandlers(config: ApiConfig) {
         const authResponse = await checkAuth(request);
         if (authResponse) return authResponse;
 
-        const body = await request.json();
-        const { status, adminNotes, category } = body;
+        const parsed = await parseJsonBody(request);
+        if (parsed.errorResponse) return parsed.errorResponse;
+        const { status, adminNotes, category } = parsed.body as {
+          status?: FeedbackStatus;
+          adminNotes?: string;
+          category?: FeedbackCategory;
+        };
 
         if (status === undefined && adminNotes === undefined && category === undefined) {
           return new Response(
@@ -166,27 +305,39 @@ export function createApiHandlers(config: ApiConfig) {
           );
         }
 
-        const validStatuses: FeedbackStatus[] = ['Pending', 'In Review', 'Done', 'Rejected'];
-        if (status && !validStatuses.includes(status)) {
+        if (status !== undefined && !VALID_STATUSES.includes(status)) {
           return new Response(
             JSON.stringify({ error: 'Invalid status value' }),
             { status: 400, headers: { 'Content-Type': 'application/json' } }
           );
         }
 
-        const existing = await adapter.getById(id);
-        if (!existing) {
-          return new Response(
-            JSON.stringify({ error: 'Feedback not found' }),
-            { status: 404, headers: { 'Content-Type': 'application/json' } }
-          );
+        // Delegate category validation to the canonical validator so the rule
+        // and its error message live in one place (validateFeedbackInput),
+        // rather than re-implementing the enum check here.
+        const categoryErrors = validateFeedbackInput({ category }, { partial: true });
+        if (categoryErrors.length > 0) {
+          return jsonResponse({ error: categoryErrors[0].message }, 400);
         }
 
+        const adminNotesError = validateAdminNotes(adminNotes);
+        if (adminNotesError) return adminNotesError;
+
+        // No getById pre-check: the update result is the 404 signal. A pre-check is
+        // racy (the row can vanish between the two calls, returning 200 with body
+        // `null`) and costs an extra round-trip.
         const updated = await adapter.update(id, {
           status,
           adminNotes: adminNotes?.trim(),
           category,
         });
+
+        if (!updated) {
+          return new Response(
+            JSON.stringify({ error: 'Feedback not found' }),
+            { status: 404, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
 
         return new Response(JSON.stringify(updated), {
           status: 200,
@@ -211,11 +362,12 @@ export function createApiHandlers(config: ApiConfig) {
         if (authResponse) return authResponse;
 
         const url = new URL(request.url);
-        const status = url.searchParams.get('status') as FeedbackStatus | null;
+        const statusParam = parseStatusParam(url);
+        if (statusParam.errorResponse) return statusParam.errorResponse;
 
         const count = adapter.getCount
-          ? await adapter.getCount(status || undefined)
-          : (await adapter.getAll(status || undefined)).length;
+          ? await adapter.getCount(statusParam.status)
+          : (await adapter.getAll(statusParam.status)).length;
 
         return new Response(JSON.stringify({ count }), {
           status: 200,
@@ -243,26 +395,7 @@ export function createApiHandlers(config: ApiConfig) {
         const inReview = await adapter.getAll('In Review');
         const allItems = [...pending, ...inReview];
 
-        const items = allItems.map((item) => {
-          let page = item.pageUrl;
-          try {
-            page = new URL(item.pageUrl).pathname;
-          } catch {
-            // Keep original if not a valid URL
-          }
-
-          return {
-            id: item.id,
-            feedback: item.feedbackText,
-            page,
-            section: item.context || 'General',
-            elementId: item.elementId || null,
-            category: item.category || null,
-            from: item.userEmail,
-            status: item.status,
-            submittedAt: item.createdAt,
-          };
-        });
+        const items = allItems.map(toTriageItem);
 
         return new Response(JSON.stringify({
           items,
@@ -286,15 +419,36 @@ export function createApiHandlers(config: ApiConfig) {
 
     /**
      * POST /api/feedback/resolve
-     * Bulk-update feedback items with status + admin notes
+     * Bulk-update feedback items with status + admin notes.
+     *
+     * Responds with `{ updated: Feedback[], notFound: string[], failed: string[] }`:
+     * - `notFound` — ids whose update matched no row: deleted, never existed, OR
+     *   silently filtered by row-level security (RLS returns zero rows without an
+     *   error, indistinguishable at the data layer from a genuine miss). Usually
+     *   safe to drop — but if the caller is hitting an RLS-protected table without
+     *   the required identity, EVERY id lands here, so ensure the resolving client
+     *   has UPDATE rights before treating `notFound` as permanently gone.
+     * - `failed` — ids whose individual update ERRORED (db outage, bad credentials,
+     *   RLS misconfiguration that raises). These should be retried, not treated as gone.
+     *
+     * Status is 200 for full/partial success, or 500 when nothing was updated and
+     * at least one update errored — so an infrastructure failure is never reported
+     * as an all-items-missing success.
      */
     async RESOLVE(request: Request): Promise<Response> {
+      // Ids of the parsed batch, captured so the catch-all 500 below can still
+      // return the documented {updated, notFound, failed} ResolveResponse shape
+      // (with every id in `failed`) rather than a differently-shaped {error}
+      // body. Typed clients read `failed` to retry; a bare {error} would make
+      // them iterate `undefined` and throw.
+      let resolveIds: string[] | null = null;
       try {
         const authResponse = await checkAuth(request);
         if (authResponse) return authResponse;
 
-        const body = await request.json();
-        const { resolutions } = body;
+        const parsed = await parseJsonBody(request);
+        if (parsed.errorResponse) return parsed.errorResponse;
+        const { resolutions } = parsed.body;
 
         if (!Array.isArray(resolutions) || resolutions.length === 0) {
           return new Response(
@@ -303,22 +457,38 @@ export function createApiHandlers(config: ApiConfig) {
           );
         }
 
-        const validStatuses: FeedbackStatus[] = ['Pending', 'In Review', 'Done', 'Rejected'];
-
         for (const resolution of resolutions) {
+          if (typeof resolution !== 'object' || resolution === null || Array.isArray(resolution)) {
+            return new Response(
+              JSON.stringify({ error: 'Each resolution must be an object' }),
+              { status: 400, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
           if (!resolution.id || typeof resolution.id !== 'string') {
             return new Response(
               JSON.stringify({ error: 'Each resolution must have a string id' }),
               { status: 400, headers: { 'Content-Type': 'application/json' } }
             );
           }
-          if (resolution.status && !validStatuses.includes(resolution.status)) {
+          if (resolution.status !== undefined && !VALID_STATUSES.includes(resolution.status)) {
             return new Response(
               JSON.stringify({ error: `Invalid status "${resolution.status}" for id "${resolution.id}"` }),
               { status: 400, headers: { 'Content-Type': 'application/json' } }
             );
           }
+          if (resolution.category !== undefined && !VALID_CATEGORIES.includes(resolution.category)) {
+            return new Response(
+              JSON.stringify({ error: `Invalid category "${resolution.category}" for id "${resolution.id}"` }),
+              { status: 400, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+          const adminNotesError = validateAdminNotes(resolution.adminNotes, { forId: resolution.id });
+          if (adminNotesError) return adminNotesError;
         }
+
+        // Validation passed: record the ids so an unexpected throw below (e.g. an
+        // atomic adapter's ROLLBACK rethrow) still yields a ResolveResponse body.
+        resolveIds = resolutions.map((r: { id: string }) => r.id);
 
         const updates: Array<{ id: string } & FeedbackUpdate> = resolutions.map(
           (r: { id: string; status?: FeedbackStatus; adminNotes?: string; category?: FeedbackUpdate['category'] }) => ({
@@ -329,37 +499,72 @@ export function createApiHandlers(config: ApiConfig) {
           })
         );
 
-        let results;
+        let results: Feedback[];
+        const failed: string[] = [];
         if (adapter.bulkUpdate) {
-          results = await adapter.bulkUpdate(updates);
+          // bulkUpdate always resolves a BulkUpdateResult. Atomic adapters
+          // (postgres) throw on any error → caught below as a 500; per-item
+          // adapters (supabase) report retryable errors in `failed`.
+          const bulkResult = await adapter.bulkUpdate(updates);
+          results = bulkResult.updated;
+          failed.push(...bulkResult.failed.map(f => f.id));
         } else {
           results = [];
           for (const { id, ...update } of updates) {
-            const updated = await adapter.update(id, update);
-            if (updated) results.push(updated);
-          }
-        }
-
-        if (config.onResolve) {
-          for (const result of results) {
-            const matchingUpdate = updates.find(u => u.id === result.id);
-            if (matchingUpdate) {
-              const { id: _id, ...updateFields } = matchingUpdate;
-              config.onResolve(result, updateFields).catch(console.error);
+            // Per-item failures must not abort the loop: earlier updates are
+            // already committed, so a blanket 500 would misreport them as not
+            // having happened. Failed ids surface in `failed` (distinct from
+            // missing-row `notFound`) so the caller can retry them.
+            try {
+              const updated = await adapter.update(id, update);
+              if (updated) results.push(updated);
+            } catch (error) {
+              console.error(`Error resolving feedback "${id}":`, error);
+              failed.push(id);
             }
           }
         }
 
-        return new Response(JSON.stringify({ updated: results }), {
-          status: 200,
+        if (config.onResolve) {
+          const { onResolve } = config;
+          // Index the updates by id once (O(n)) rather than scanning the
+          // updates array for every result (O(n·m)) on large batches.
+          const updateById = new Map(updates.map(u => [u.id, u]));
+          for (const result of results) {
+            const matchingUpdate = updateById.get(result.id);
+            if (matchingUpdate) {
+              const { id: _id, ...updateFields } = matchingUpdate;
+              fireAndForget(() => onResolve(result, updateFields));
+            }
+          }
+        }
+
+        // `notFound`: ids whose update matched no row (deleted, never existed,
+        // or filtered by RLS) — distinct from `failed` (ids whose update
+        // errored and should be retried). When nothing succeeded and at least
+        // one update errored, respond 500 so an infrastructure failure (db
+        // outage, expired credentials) is never reported as success.
+        const updatedIds = new Set(results.map(r => r.id));
+        const failedIds = new Set(failed);
+        const notFound = updates
+          .map(u => u.id)
+          .filter(uId => !updatedIds.has(uId) && !failedIds.has(uId));
+
+        const status = results.length === 0 && failed.length > 0 ? 500 : 200;
+        return new Response(JSON.stringify({ updated: results, notFound, failed }), {
+          status,
           headers: { 'Content-Type': 'application/json' },
         });
       } catch (error) {
         console.error('Error resolving feedback:', error);
-        return new Response(
-          JSON.stringify({ error: 'Failed to resolve feedback' }),
-          { status: 500, headers: { 'Content-Type': 'application/json' } }
-        );
+        // Honour the ResolveResponse contract on the catch-all 500: report every
+        // parsed id as `failed` (retryable) so a typed client can act on it. Only
+        // fall back to {error} when we threw before parsing any ids (in which
+        // case the request never reached the item-processing stage).
+        if (resolveIds) {
+          return jsonResponse({ updated: [], notFound: [], failed: resolveIds }, 500);
+        }
+        return jsonResponse({ error: 'Failed to resolve feedback' }, 500);
       }
     }
   };

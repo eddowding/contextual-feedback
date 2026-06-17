@@ -1,62 +1,32 @@
+import { buildFeedbackSchemaSql } from '../lib/schema';
+
 /**
- * Complete idempotent Supabase setup SQL.
+ * Complete idempotent Supabase setup SQL (table, indexes, updated_at trigger).
  *
  * Run this in your Supabase dashboard SQL editor or via `supabase db push`.
  * The Supabase JS client cannot execute DDL statements.
+ *
+ * Built from the shared base DDL in lib/schema.ts so it can never drift from
+ * the adapters' POSTGRES_SCHEMA / SUPABASE_SCHEMA constants.
  */
-export const SUPABASE_SETUP_SQL = `
--- ============================================================================
--- Table
--- ============================================================================
-CREATE TABLE IF NOT EXISTS feedback (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_email VARCHAR(255) NOT NULL,
-  page_url VARCHAR(2000) NOT NULL,
-  feedback_text TEXT NOT NULL,
-  status VARCHAR(50) NOT NULL DEFAULT 'Pending'
-    CHECK (status IN ('Pending', 'In Review', 'Done', 'Rejected')),
-  category VARCHAR(50)
-    CHECK (category IS NULL OR category IN ('bug', 'feature', 'praise', 'question', 'other')),
-  context VARCHAR(255),
-  element_id VARCHAR(255),
-  admin_notes TEXT,
-  resolved_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- ============================================================================
--- Indexes
--- ============================================================================
-CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON feedback(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_feedback_status ON feedback(status);
-CREATE INDEX IF NOT EXISTS idx_feedback_user_email ON feedback(user_email);
-CREATE INDEX IF NOT EXISTS idx_feedback_category ON feedback(category);
-
--- ============================================================================
--- Auto-update updated_at trigger
--- ============================================================================
-CREATE OR REPLACE FUNCTION update_feedback_updated_at()
-RETURNS TRIGGER AS $$
-BEGIN
-  NEW.updated_at = NOW();
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS trg_feedback_updated_at ON feedback;
-CREATE TRIGGER trg_feedback_updated_at
-  BEFORE UPDATE ON feedback
-  FOR EACH ROW
-  EXECUTE FUNCTION update_feedback_updated_at();
-`;
+export const SUPABASE_SETUP_SQL = buildFeedbackSchemaSql('NOW()');
 
 /**
  * Row Level Security policies for the feedback table.
  *
  * Assumes:
- * - Authenticated users can INSERT and SELECT their own feedback
- * - Admin users (via is_admin() function) can do everything
+ * - Anonymous (anon role) submissions are allowed, but ONLY attributed to the
+ *   'anonymous' sentinel — the public POST endpoint is ungated by design and
+ *   stores user_email = 'anonymous' when no identity is available.
+ * - Authenticated users can INSERT feedback as themselves (or anonymously) and
+ *   SELECT their own feedback.
+ * - Admin users (via is_admin() function) can do everything.
+ *
+ * Deployment note: the anti-forgery binding (user_email = JWT email) only holds
+ * when the end-user's JWT is forwarded to Supabase. If your server inserts via a
+ * plain anon-key client without the user's session, every insert runs as the
+ * anon role and attribution must be enforced at the API layer (authorize +
+ * getUserEmail) instead.
  *
  * Apply separately if you want RLS. Skip if you manage access at the API layer.
  */
@@ -87,11 +57,29 @@ ALTER TABLE feedback ENABLE ROW LEVEL SECURITY;
 -- Policies
 -- ============================================================================
 
--- Authenticated users can submit feedback
+-- Anonymous submissions. The public POST endpoint is ungated by design and
+-- stores user_email = 'anonymous' when no identity is available, so the anon
+-- role must be allowed to insert — but ONLY rows attributed to 'anonymous',
+-- never rows forging a real user's email. Without this policy, every
+-- unauthenticated submission is silently rejected by RLS.
+CREATE POLICY "feedback_insert_anonymous" ON feedback
+  FOR INSERT
+  TO anon
+  WITH CHECK (user_email = 'anonymous');
+
+-- Authenticated users can submit feedback as themselves — or anonymously.
+-- Binding user_email to the JWT identity stops a signed-in user inserting rows
+-- attributed to someone ELSE (who would then see forged feedback via
+-- feedback_select_own); 'anonymous' is always permitted so a signed-in user can
+-- still leave unattributed feedback.
 CREATE POLICY "feedback_insert_authenticated" ON feedback
   FOR INSERT
   TO authenticated
-  WITH CHECK (true);
+  WITH CHECK (
+    user_email = (SELECT auth.jwt() ->> 'email')
+    OR user_email = 'anonymous'
+    OR (SELECT is_admin())
+  );
 
 -- Authenticated users can read their own feedback
 CREATE POLICY "feedback_select_own" ON feedback

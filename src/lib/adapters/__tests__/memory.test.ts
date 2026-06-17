@@ -147,6 +147,47 @@ describe('createMemoryAdapter', () => {
     expect(updated!.resolvedAt).toBeTruthy();
   });
 
+  it('preserves the original resolvedAt when a resolved status is re-applied', async () => {
+    const fb = await adapter.add({
+      userEmail: 'u@t.com',
+      pageUrl: '/p',
+      feedbackText: 'Test',
+    });
+
+    const resolved = await adapter.update(fb.id, { status: 'Done' });
+    const originalResolvedAt = resolved!.resolvedAt;
+    expect(originalResolvedAt).toBeTruthy();
+
+    await new Promise(r => setTimeout(r, 5));
+
+    // Retried/idempotent RESOLVE call (re-sends status while editing notes)
+    const retried = await adapter.update(fb.id, { status: 'Done', adminNotes: 'still fixed' });
+    expect(retried!.resolvedAt).toBe(originalResolvedAt);
+
+    await new Promise(r => setTimeout(r, 5));
+
+    // Switching between resolved states also keeps the original timestamp
+    const rejected = await adapter.update(fb.id, { status: 'Rejected' });
+    expect(rejected!.resolvedAt).toBe(originalResolvedAt);
+  });
+
+  it('sets a fresh resolvedAt after the item was reopened', async () => {
+    const fb = await adapter.add({
+      userEmail: 'u@t.com',
+      pageUrl: '/p',
+      feedbackText: 'Test',
+    });
+
+    const first = await adapter.update(fb.id, { status: 'Done' });
+    await adapter.update(fb.id, { status: 'Pending' });
+
+    await new Promise(r => setTimeout(r, 5));
+
+    const second = await adapter.update(fb.id, { status: 'Done' });
+    expect(second!.resolvedAt).toBeTruthy();
+    expect(second!.resolvedAt).not.toBe(first!.resolvedAt);
+  });
+
   it('clears resolvedAt when status goes back to Pending', async () => {
     const fb = await adapter.add({
       userEmail: 'u@t.com',
@@ -211,27 +252,28 @@ describe('createMemoryAdapter', () => {
     const fb1 = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'A' });
     const fb2 = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'B' });
 
-    const results = await adapter.bulkUpdate!([
+    const { updated, failed } = await adapter.bulkUpdate!([
       { id: fb1.id, status: 'Done', adminNotes: 'Fixed' },
       { id: fb2.id, status: 'Rejected' },
     ]);
 
-    expect(results).toHaveLength(2);
-    expect(results[0].status).toBe('Done');
-    expect(results[0].adminNotes).toBe('Fixed');
-    expect(results[0].resolvedAt).toBeTruthy();
-    expect(results[1].status).toBe('Rejected');
-    expect(results[1].resolvedAt).toBeTruthy();
+    expect(updated).toHaveLength(2);
+    expect(failed).toHaveLength(0);
+    expect(updated[0].status).toBe('Done');
+    expect(updated[0].adminNotes).toBe('Fixed');
+    expect(updated[0].resolvedAt).toBeTruthy();
+    expect(updated[1].status).toBe('Rejected');
+    expect(updated[1].resolvedAt).toBeTruthy();
   });
 
   it('bulkUpdate skips non-existent ids', async () => {
     const fb = await adapter.add({ userEmail: 'u@t.com', pageUrl: '/p', feedbackText: 'A' });
 
-    const results = await adapter.bulkUpdate!([
+    const { updated } = await adapter.bulkUpdate!([
       { id: fb.id, status: 'Done' },
       { id: 'nonexistent', status: 'Done' },
     ]);
 
-    expect(results).toHaveLength(1);
+    expect(updated).toHaveLength(1);
   });
 });
