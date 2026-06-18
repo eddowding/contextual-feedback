@@ -6,11 +6,19 @@
     "moduleResolution": "bundler",
     "jsx": "react-jsx",
     "strict": true,
+    // TypeScript 6 makes the deprecated `baseUrl` (injected by tsup's internal
+    // DTS build) a hard error (TS5101); silence it during the 6.x transition.
+    // baseUrl is fully removed in TS 7 — revisit then.
+    "ignoreDeprecations": "6.0",
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "declaration": true,
     "declarationMap": true,
+    // TS 6 no longer auto-includes every @types package when `lib` is set, so
+    // name node types explicitly (mirrors examples/triage-watcher/tsconfig) —
+    // otherwise `node:fs` etc. in tests fail to resolve (TS2591).
+    "types": ["node"],
     "outDir": "./dist",
     "rootDir": "./src"
   },
