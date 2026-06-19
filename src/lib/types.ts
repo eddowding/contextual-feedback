@@ -219,16 +219,17 @@ export function validateFeedbackInput(
     }
   }
 
-  // context and element_id are VARCHAR(255) in the SQL schemas — reject
-  // oversized values here as a 400 instead of letting the database error
-  // surface as a 500. Note this runs at the HTTP boundary (validateFeedbackInput
-  // is called by the API handlers); a caller writing directly through an adapter
-  // is responsible for its own input limits.
+  // context is TEXT in the SQL schemas (no DB length limit), so it is bounded
+  // here only by a sane free-text cap matching feedback_text (5000). element_id
+  // stays VARCHAR(255) — reject oversized values as a 400 instead of letting the
+  // database error surface as a 500. Note this runs at the HTTP boundary
+  // (validateFeedbackInput is called by the API handlers); a caller writing
+  // directly through an adapter is responsible for its own input limits.
   if (input.context !== undefined) {
     if (typeof input.context !== 'string') {
       errors.push({ field: 'context', message: 'Context must be a string' });
-    } else if (input.context.trim().length > 255) {
-      errors.push({ field: 'context', message: 'Context must be 255 characters or less' });
+    } else if (input.context.trim().length > 5000) {
+      errors.push({ field: 'context', message: 'Context must be 5000 characters or less' });
     }
   }
 

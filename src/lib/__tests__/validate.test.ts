@@ -158,7 +158,7 @@ describe('validateFeedbackInput', () => {
     expect(fields).toContain('userEmail');
   });
 
-  describe('context and elementId (VARCHAR(255) schema limits)', () => {
+  describe('context (TEXT, 5000-char cap) and elementId (VARCHAR(255))', () => {
     it('allows context and elementId at exactly 255 chars', () => {
       const errors = validateFeedbackInput(
         { context: 'c'.repeat(255), elementId: 'e'.repeat(255) },
@@ -167,12 +167,17 @@ describe('validateFeedbackInput', () => {
       expect(errors).toEqual([]);
     });
 
-    it('rejects context exceeding 255 chars (400, not a DB-driven 500)', () => {
-      const errors = validateFeedbackInput({ context: 'c'.repeat(256) }, { partial: true });
+    it('allows context well beyond 255 chars (TEXT column — up to 5000)', () => {
+      const errors = validateFeedbackInput({ context: 'c'.repeat(5000) }, { partial: true });
+      expect(errors).toEqual([]);
+    });
+
+    it('rejects context exceeding 5000 chars (400, not a DB-driven 500)', () => {
+      const errors = validateFeedbackInput({ context: 'c'.repeat(5001) }, { partial: true });
       expect(errors).toHaveLength(1);
       expect(errors[0]).toEqual({
         field: 'context',
-        message: 'Context must be 255 characters or less',
+        message: 'Context must be 5000 characters or less',
       });
     });
 
