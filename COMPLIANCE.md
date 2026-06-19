@@ -1,7 +1,7 @@
 # Compliance Notes — contextual-feedback
 
-**Version:** 0.2.0  
-**Date:** 2026-06-12  
+**Version:** 0.3.0  
+**Date:** 2026-06-19  
 **Maintainer:** Ed Dowding
 
 ---
@@ -31,7 +31,7 @@ configuration:
 | `userEmail` | Personal identifier | No — `collectEmail` defaults to `'never'`; stored as `'anonymous'` when absent | Validated to contain `@`; 255-char limit |
 | `feedbackText` | Free text (may contain personal data) | Yes | 5,000-char limit; server-validated |
 | `pageUrl` | URL of page (may contain path parameters carrying personal data) | Yes | 2,000-char limit; scheme-validated |
-| `context` | Section label from `data-feedback-context` attribute | No | Operator-authored string, 255-char limit |
+| `context` | Section label / operator-authored context from `data-feedback-context` attribute | No | Operator-authored string, `TEXT` column, 5000-char cap |
 | `elementId` | HTML element ID from `data-feedback-id` attribute | No | 255-char limit |
 | `adminNotes` | Free text added by the operator's admin users | No | 5,000-char limit |
 

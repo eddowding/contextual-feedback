@@ -138,18 +138,18 @@ describe('createApiHandlers', () => {
       expect(data.elementId).toBe('pricing');
     });
 
-    it('returns 400 for context exceeding 255 chars (schema VARCHAR(255))', async () => {
+    it('returns 400 for context exceeding 5000 chars (TEXT column, free-text cap)', async () => {
       const res = await handlers.POST(
         jsonRequest('http://localhost/api/feedback', {
           feedbackText: 'Bug',
           pageUrl: '/page',
-          context: 'c'.repeat(256),
+          context: 'c'.repeat(5001),
         })
       );
 
       expect(res.status).toBe(400);
       const data = await res.json();
-      expect(data.error).toContain('255');
+      expect(data.error).toContain('5000');
     });
 
     it('returns 400 for elementId exceeding 255 chars', async () => {

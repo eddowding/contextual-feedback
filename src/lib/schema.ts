@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS feedback (
     CHECK (status IN ('Pending', 'In Review', 'Done', 'Rejected')),
   category VARCHAR(50)
     CHECK (category IS NULL OR category IN ('bug', 'feature', 'praise', 'question', 'other')),
-  context VARCHAR(255),
+  context TEXT,
   element_id VARCHAR(255),
   admin_notes TEXT,
   resolved_at TIMESTAMPTZ,
